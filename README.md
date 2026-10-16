@@ -8,7 +8,7 @@ them to any synth in your DAW: MadScaler has no sounds of its own.
 This is an independent project. It is not affiliated with, and contains no
 code, presets or assets from, any commercial chord plugin.
 
-## Features (v0.5)
+## Features (v0.6)
 
 - Key picker (all 12 keys) and 11 seven-note scales: Major, Natural/Harmonic/
   Melodic Minor, the modes, Harmonic Major and Phrygian Dominant.
@@ -39,10 +39,18 @@ code, presets or assets from, any commercial chord plugin.
   loops the progression in time with your DAW (using the current pattern
   and voicing settings), "Export MIDI" saves it as a .mid file and the
   "Drag MIDI" handle drags it straight onto a DAW track.
+- Chord colours: press a pad and the Colours panel shows richer versions of
+  that chord (6, 7, 9, add9, 11, 13, sus2, sus4), the same chord borrowed
+  from the parallel minor/major and other modes, and secondary dominants
+  (V7 of the chord, vii°7 of the chord and the tritone sub). Click a colour
+  to play it, or add it to the progression with "Add chords" on.
+- Next-chord hints: after a chord is played, the pads that usually come next
+  are marked "next".
+- Circle of Fifths: the chords of the current scale are highlighted. Click a
+  segment to play that chord; right-click it to change key.
 - Settings and the progression are saved with your DAW project.
 
-Next up: chord colours (extensions, borrowed chords), a chord set library
-and motions (basslines and melodies).
+Next up: a chord set library and motions (basslines and melodies).
 
 ## Download
 
@@ -75,7 +83,8 @@ The VST3 ends up in `build/MadScaler_artefacts/Release/VST3/`.
 - `Source/Voicing.*` inversions, open/drop voicings, bass note, voice leading.
 - `Source/PatternEngine.*` tempo-synced strums, arpeggios and pulses.
 - `Source/Progression.*` chord progressions and their MIDI rendering.
+- `Source/ChordColours.*` extensions, borrowed and secondary chords, next-chord hints.
 - `Source/PluginProcessor.*` turns pad presses and MIDI input into MIDI chords.
 - `Source/PluginEditor.*` the user interface.
 - `tests/` unit tests for the theory code, chord detection, voicings,
-  patterns, progressions and the processor's MIDI output.
+  patterns, progressions, chord colours and the processor's MIDI output.

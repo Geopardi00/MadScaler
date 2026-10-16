@@ -148,6 +148,37 @@ int main()
     notes = runBlock (processor);
     expect (hasNotes (notes, false, { 52, 55, 60, 64 }), "releasing a detected chord stops it");
 
+    // Colour chords: Dm9 from the ii chord's colours, then a Circle of Fifths chord.
+    {
+        const auto groups = processor.getColoursForDegree (1);
+        const madscaler::ColourChord* dm9 = nullptr;
+        for (const auto& chord : groups.front().chords)
+            if (chord.name == "Dm9")
+                dm9 = &chord;
+        expect (dm9 != nullptr && dm9->notes == std::vector<int> { 62, 65, 69, 72, 76 }, "Dm9 colour chord");
+
+        if (dm9 != nullptr)
+        {
+            processor.setColourChordPressed (7, dm9->notes, true);
+            notes = runBlock (processor);
+            expect (hasNotes (notes, true, { 62, 65, 69, 72, 76 }), "colour chord plays its notes");
+            expect (processor.getActiveColourChord() == 7, "colour chord chip is lit");
+            processor.setColourChordPressed (7, {}, false);
+            notes = runBlock (processor);
+            expect (hasNotes (notes, false, { 62, 65, 69, 72, 76 }), "releasing a colour chord stops it");
+            expect (processor.getActiveColourChord() == -1, "no colour chip lit after release");
+        }
+
+        const auto d = processor.getCircleChord (2, false);
+        expect (d.name == "D" && d.notes == std::vector<int> { 62, 66, 69 }, "D major from the circle");
+
+        processor.setPadPressed (5, true);
+        runBlock (processor);
+        processor.setPadPressed (5, false);
+        runBlock (processor);
+        expect (processor.getLastPlayedDegree() == 5, "last played degree is tracked for next-chord hints");
+    }
+
     // Voicings: first inversion of I in C major, then voice leading from C to F.
     setParam (processor, "inversion", 1.0f);
     processor.setPadPressed (0, true);

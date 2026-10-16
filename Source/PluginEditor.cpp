@@ -34,12 +34,34 @@ namespace madscaler::ui
         }
     }
 
+    void ChordPad::setSuggestion (int rank)
+    {
+        if (suggestion != rank)
+        {
+            suggestion = rank;
+            repaint();
+        }
+    }
+
     void ChordPad::paint (juce::Graphics& g)
     {
         auto area = getLocalBounds().toFloat().reduced (4.0f);
 
         g.setColour (lit ? Colours::padLit : Colours::pad);
         g.fillRoundedRectangle (area, 10.0f);
+
+        if (suggestion >= 0 && ! lit)
+        {
+            // Likely next chord: a tag in the corner, brightest for the most likely.
+            const auto alpha = suggestion == 0 ? 0.95f : suggestion == 1 ? 0.7f : 0.5f;
+            g.setColour (Colours::accent.withAlpha (alpha * 0.5f));
+            g.drawRoundedRectangle (area, 10.0f, 1.5f);
+            auto tag = area.reduced (8.0f).removeFromBottom (16.0f).removeFromRight (34.0f);
+            tag.translate (0.0f, -18.0f);
+            g.setColour (Colours::accent.withAlpha (alpha));
+            g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+            g.drawText ("next", tag, juce::Justification::centredRight);
+        }
 
         if (isMouseOver())
         {
@@ -212,6 +234,331 @@ namespace madscaler::ui
         {
             held = false;
             processor.setDetectedChordPressed (slot, {}, false);
+        }
+    }
+
+    ColourChip::ColourChip (MadScalerProcessor& p, int i) : processor (p), id (i) {}
+
+    void ColourChip::setChord (const madscaler::ColourChord* newChord)
+    {
+        hasChord = newChord != nullptr;
+        if (hasChord)
+            chord = *newChord;
+        setVisible (hasChord);
+        repaint();
+    }
+
+    void ColourChip::setLit (bool shouldBeLit)
+    {
+        if (lit != shouldBeLit)
+        {
+            lit = shouldBeLit;
+            repaint();
+        }
+    }
+
+    void ColourChip::paint (juce::Graphics& g)
+    {
+        auto area = getLocalBounds().toFloat().reduced (2.0f);
+
+        g.setColour (lit ? Colours::padLit : Colours::pad);
+        g.fillRoundedRectangle (area, 6.0f);
+
+        if (isMouseOver())
+        {
+            g.setColour (Colours::accent.withAlpha (0.6f));
+            g.drawRoundedRectangle (area, 6.0f, 1.5f);
+        }
+
+        auto text = area.reduced (3.0f, 2.0f);
+        g.setColour (Colours::text);
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        g.drawFittedText (juce::String::fromUTF8 (chord.name.c_str()),
+                          text.removeFromTop (text.getHeight() * 0.58f).toNearestInt(), juce::Justification::centredBottom, 1);
+        g.setColour (lit ? Colours::text : Colours::textDim);
+        g.setFont (juce::FontOptions (10.5f));
+        g.drawFittedText (juce::String::fromUTF8 (chord.label.c_str()), text.toNearestInt(), juce::Justification::centredTop, 1);
+    }
+
+    void ColourChip::mouseDown (const juce::MouseEvent&)
+    {
+        if (! hasChord)
+            return;
+
+        held = true;
+        processor.setColourChordPressed (id, chord.notes, true);
+        if (onPressed)
+            onPressed (id, chord);
+    }
+
+    void ColourChip::mouseUp (const juce::MouseEvent&)
+    {
+        if (held)
+        {
+            held = false;
+            processor.setColourChordPressed (id, {}, false);
+        }
+    }
+
+    CircleOfFifths::CircleOfFifths (MadScalerProcessor& p) : processor (p) {}
+
+    void CircleOfFifths::refresh()
+    {
+        const auto key = processor.getKey();
+        const auto scale = processor.getScaleIndex();
+
+        for (int segment = 0; segment < 24; ++segment)
+        {
+            const auto chord = madscaler::buildCircleChord (segment % 12, segment >= 12, 60);
+            inScale[(size_t) segment] = madscaler::isChordInScale (chord.notes, key, scale);
+        }
+
+        // The key's tonic chord: outer ring for major-type scales, inner for minor-type.
+        const bool minorKey = madscaler::getScales()[(size_t) scale].intervals[2] == 3;
+        tonicSegment = -1;
+        for (int position = 0; position < 12; ++position)
+            if (madscaler::circlePitchClass (position, minorKey) == key)
+                tonicSegment = position + (minorKey ? 12 : 0);
+
+        repaint();
+    }
+
+    void CircleOfFifths::setLitId (int id)
+    {
+        if (litId != id)
+        {
+            litId = id;
+            repaint();
+        }
+    }
+
+    void CircleOfFifths::paint (juce::Graphics& g)
+    {
+        const auto bounds = getLocalBounds().toFloat();
+        const auto centre = bounds.getCentre();
+        const auto outer = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f - 2.0f;
+        const auto middle = outer * 0.68f;
+        const auto inner = outer * 0.38f;
+        const auto step = juce::MathConstants<float>::twoPi / 12.0f;
+
+        for (int segment = 0; segment < 24; ++segment)
+        {
+            const bool minor = segment >= 12;
+            const auto position = segment % 12;
+            const auto from = minor ? inner : middle;
+            const auto to = minor ? middle : outer;
+            const auto start = ((float) position - 0.5f) * step;
+
+            juce::Path path;
+            path.addPieSegment (centre.x - to, centre.y - to, to * 2.0f, to * 2.0f, start, start + step, from / to);
+
+            const bool lit = litId == firstId + segment;
+            const bool diatonic = inScale[(size_t) segment];
+            g.setColour (lit ? Colours::padLit : diatonic ? Colours::pad.brighter (0.45f) : Colours::pad);
+            g.fillPath (path);
+            g.setColour (Colours::panel);
+            g.strokePath (path, juce::PathStrokeType (1.5f));
+
+            const auto angle = (float) position * step;
+            const auto radius = (from + to) * 0.5f;
+            const juce::Point<float> labelCentre { centre.x + radius * std::sin (angle), centre.y - radius * std::cos (angle) };
+            const auto name = madscaler::getNoteName (madscaler::circlePitchClass (position, minor)) + (minor ? "m" : "");
+
+            g.setColour (diatonic || lit ? Colours::text : Colours::textDim);
+            g.setFont (juce::FontOptions (minor ? 10.0f : 11.5f, diatonic ? juce::Font::bold : juce::Font::plain));
+            g.drawText (name, juce::Rectangle<float> (30.0f, 14.0f).withCentre (labelCentre), juce::Justification::centred);
+        }
+
+        if (tonicSegment >= 0)
+        {
+            const bool minor = tonicSegment >= 12;
+            const auto from = minor ? inner : middle;
+            const auto to = minor ? middle : outer;
+            const auto start = ((float) (tonicSegment % 12) - 0.5f) * step;
+            juce::Path path;
+            path.addPieSegment (centre.x - to, centre.y - to, to * 2.0f, to * 2.0f, start, start + step, from / to);
+            g.setColour (Colours::accent);
+            g.strokePath (path, juce::PathStrokeType (2.0f));
+        }
+
+        g.setColour (Colours::textDim);
+        g.setFont (juce::FontOptions (10.0f));
+        g.drawText ("5ths", juce::Rectangle<float> (inner * 2.0f, 14.0f).withCentre (centre), juce::Justification::centred);
+    }
+
+    bool CircleOfFifths::hitTestSegment (juce::Point<float> position, int& segment, bool& minor) const
+    {
+        const auto bounds = getLocalBounds().toFloat();
+        const auto centre = bounds.getCentre();
+        const auto outer = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f - 2.0f;
+        const auto middle = outer * 0.68f;
+        const auto inner = outer * 0.38f;
+
+        const auto offset = position - centre;
+        const auto distance = offset.getDistanceFromOrigin();
+        if (distance < inner || distance > outer)
+            return false;
+
+        auto angle = std::atan2 (offset.x, -offset.y); // 0 at the top, clockwise
+        if (angle < 0.0f)
+            angle += juce::MathConstants<float>::twoPi;
+
+        segment = juce::roundToInt (angle / (juce::MathConstants<float>::twoPi / 12.0f)) % 12;
+        minor = distance < middle;
+        return true;
+    }
+
+    void CircleOfFifths::setKey (int pitchClass, bool minor)
+    {
+        auto setParam = [this] (const char* id, int value)
+        {
+            if (auto* param = processor.parameters.getParameter (id))
+            {
+                param->beginChangeGesture();
+                param->setValueNotifyingHost (param->convertTo0to1 ((float) value));
+                param->endChangeGesture();
+            }
+        };
+
+        setParam ("key", pitchClass);
+        setParam ("scale", minor ? 1 : 0); // Natural Minor or Major
+    }
+
+    void CircleOfFifths::mouseDown (const juce::MouseEvent& e)
+    {
+        int position = 0;
+        bool minor = false;
+        if (! hitTestSegment (e.position, position, minor))
+            return;
+
+        if (e.mods.isPopupMenu())
+        {
+            const auto pitchClass = madscaler::circlePitchClass (position, minor);
+            const auto name = juce::String (madscaler::getNoteName (pitchClass)) + (minor ? " minor" : " major");
+            juce::PopupMenu menu;
+            menu.addItem ("Set key to " + name, [this, pitchClass, minor] { setKey (pitchClass, minor); });
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this));
+            return;
+        }
+
+        const auto chord = processor.getCircleChord (position, minor);
+        heldId = firstId + position + (minor ? 12 : 0);
+        processor.setColourChordPressed (heldId, chord.notes, true);
+        if (onPressed)
+            onPressed (chord);
+    }
+
+    void CircleOfFifths::mouseUp (const juce::MouseEvent&)
+    {
+        if (heldId >= 0)
+        {
+            processor.setColourChordPressed (heldId, {}, false);
+            heldId = -1;
+        }
+    }
+
+    ColoursPanel::ColoursPanel (MadScalerProcessor& p) : processor (p), circle (p)
+    {
+        titleLabel.setColour (juce::Label::textColourId, Colours::accent);
+        titleLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        addAndMakeVisible (titleLabel);
+
+        hintLabel.setText ("Press a pad to see its colours. Right-click the circle to change key.", juce::dontSendNotification);
+        hintLabel.setColour (juce::Label::textColourId, Colours::textDim);
+        hintLabel.setFont (juce::FontOptions (11.5f));
+        hintLabel.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (hintLabel);
+
+        for (int g = 0; g < numGroups; ++g)
+        {
+            auto& label = groupLabels[(size_t) g];
+            label.setColour (juce::Label::textColourId, Colours::textDim);
+            label.setFont (juce::FontOptions (12.0f));
+            addAndMakeVisible (label);
+
+            for (int i = 0; i < maxChipsPerGroup; ++i)
+            {
+                auto& chip = chips[(size_t) g][(size_t) i];
+                chip = std::make_unique<ColourChip> (processor, g * maxChipsPerGroup + i);
+                chip->onPressed = [this] (int, const madscaler::ColourChord& chord)
+                {
+                    if (onChordPressed)
+                        onChordPressed (chord.name, chord.notes);
+                };
+                addChildComponent (*chip);
+            }
+        }
+
+        circle.onPressed = [this] (const madscaler::ColourChord& chord)
+        {
+            if (onChordPressed)
+                onChordPressed (chord.name, chord.notes);
+        };
+        addAndMakeVisible (circle);
+    }
+
+    void ColoursPanel::setDegree (int newDegree)
+    {
+        if (degree != newDegree)
+        {
+            degree = newDegree;
+            refresh();
+        }
+    }
+
+    void ColoursPanel::refresh()
+    {
+        groups = processor.getColoursForDegree (degree);
+        const auto base = processor.getChordForDegree (degree);
+        titleLabel.setText ("Colours for " + juce::String::fromUTF8 (base.name.c_str()) + "  ("
+                                + juce::String::fromUTF8 (base.roman.c_str()) + ")",
+                            juce::dontSendNotification);
+
+        for (size_t g = 0; g < (size_t) numGroups; ++g)
+        {
+            const auto* group = g < groups.size() ? &groups[g] : nullptr;
+            groupLabels[g].setText (group != nullptr ? juce::String (group->title) : juce::String(), juce::dontSendNotification);
+
+            for (size_t i = 0; i < (size_t) maxChipsPerGroup; ++i)
+                chips[g][i]->setChord (group != nullptr && i < group->chords.size() ? &group->chords[i] : nullptr);
+        }
+
+        circle.refresh();
+    }
+
+    void ColoursPanel::update()
+    {
+        const auto active = processor.getActiveColourChord();
+        for (auto& row : chips)
+            for (auto& chip : row)
+                chip->setLit (chip->getId() == active);
+        circle.setLitId (active);
+    }
+
+    void ColoursPanel::paint (juce::Graphics& g)
+    {
+        g.setColour (Colours::panel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+    }
+
+    void ColoursPanel::resized()
+    {
+        auto area = getLocalBounds().reduced (10, 6);
+        circle.setBounds (area.removeFromLeft (area.getHeight()));
+        area.removeFromLeft (12);
+
+        auto header = area.removeFromTop (20);
+        titleLabel.setBounds (header.removeFromLeft (240));
+        hintLabel.setBounds (header);
+
+        const auto rowHeight = area.getHeight() / numGroups;
+        for (int g = 0; g < numGroups; ++g)
+        {
+            auto row = area.removeFromTop (rowHeight);
+            groupLabels[(size_t) g].setBounds (row.removeFromLeft (76));
+            const auto chipWidth = juce::jmin (96, row.getWidth() / maxChipsPerGroup);
+            for (auto& chip : chips[(size_t) g])
+                chip->setBounds (row.removeFromLeft (chipWidth).reduced (1, 1));
         }
     }
 
@@ -688,7 +1035,7 @@ namespace madscaler::ui
 } // namespace madscaler::ui
 
 MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), progressionStrip (p), keyboard (p)
+    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), coloursPanel (p), progressionStrip (p), keyboard (p)
 {
     auto& lf = getLookAndFeel();
     lf.setColour (juce::ComboBox::backgroundColourId, Colours::panel);
@@ -785,13 +1132,36 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
         addAndMakeVisible (*pads[(size_t) i]);
     }
 
-    addAndMakeVisible (detectionPanel);
+    addChildComponent (detectionPanel);
+    addAndMakeVisible (coloursPanel);
     addAndMakeVisible (progressionStrip);
+
+    for (auto* tab : { &coloursTab, &detectTab })
+    {
+        tab->setClickingTogglesState (true);
+        tab->setRadioGroupId (1);
+        tab->setColour (juce::TextButton::buttonColourId, Colours::background);
+        tab->setColour (juce::TextButton::buttonOnColourId, Colours::panel);
+        tab->setColour (juce::TextButton::textColourOffId, Colours::textDim);
+        tab->setColour (juce::TextButton::textColourOnId, Colours::accent);
+        tab->setConnectedEdges (juce::Button::ConnectedOnBottom);
+        addAndMakeVisible (*tab);
+    }
+    coloursTab.onClick = [this] { showTab (true); };
+    detectTab.onClick = [this] { showTab (false); };
+    coloursTab.setToggleState (true, juce::dontSendNotification);
+
+    coloursPanel.onChordPressed = [this] (const std::string& name, const std::vector<int>& notes)
+    {
+        if (progressionStrip.isAddMode())
+            progressionStrip.addChord (name, notes);
+    };
 
     // With "Add chords" on, pressed chords also go into the progression.
     for (auto& pad : pads)
         pad->onPressed = [this] (int degree)
         {
+            coloursPanel.setDegree (degree);
             if (progressionStrip.isAddMode())
             {
                 const auto chord = processor.getChordForDegree (degree, progressionStrip.lastChordNotes());
@@ -813,8 +1183,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (keyboard);
 
     setResizable (true, true);
-    setResizeLimits (800, 740, 1600, 1300);
-    setSize (880, 800);
+    setResizeLimits (800, 800, 1600, 1360);
+    setSize (880, 860);
     startTimerHz (30);
 }
 
@@ -885,7 +1255,12 @@ void MadScalerEditor::resized()
     keyTriggerButton.setBounds (secondRow);
 
     area.removeFromTop (4);
-    detectionPanel.setBounds (area.removeFromTop (96));
+    auto tabs = area.removeFromTop (24);
+    coloursTab.setBounds (tabs.removeFromLeft (90));
+    detectTab.setBounds (tabs.removeFromLeft (90));
+    const auto panelArea = area.removeFromTop (150);
+    coloursPanel.setBounds (panelArea);
+    detectionPanel.setBounds (panelArea);
     area.removeFromTop (8);
     progressionStrip.setBounds (area.removeFromTop (84));
     area.removeFromTop (8);
@@ -909,6 +1284,14 @@ void MadScalerEditor::refreshChords()
 
     scaleNotesLabel.setText ("Scale notes: " + names.joinIntoString ("  "), juce::dontSendNotification);
     keyboard.repaint();
+    coloursPanel.refresh();
+    lastSuggestedDegree = -2; // the scale may have changed between major and minor
+}
+
+void MadScalerEditor::showTab (bool colours)
+{
+    coloursPanel.setVisible (colours);
+    detectionPanel.setVisible (! colours);
 }
 
 void MadScalerEditor::timerCallback()
@@ -926,7 +1309,25 @@ void MadScalerEditor::timerCallback()
     }
 
     detectionPanel.update();
+    coloursPanel.update();
     progressionStrip.update();
+
+    // Mark the pads that usually follow the last chord played.
+    const auto lastDegree = processor.getLastPlayedDegree();
+    if (lastDegree != lastSuggestedDegree)
+    {
+        lastSuggestedDegree = lastDegree;
+        std::array<int, MadScalerProcessor::numDegrees> ranks;
+        ranks.fill (-1);
+        if (lastDegree >= 0)
+        {
+            const auto next = madscaler::suggestNextDegrees (processor.getScaleIndex(), lastDegree);
+            for (size_t rank = 0; rank < next.size(); ++rank)
+                ranks[(size_t) next[rank]] = (int) rank;
+        }
+        for (size_t i = 0; i < ranks.size(); ++i)
+            pads[i]->setSuggestion (ranks[i]);
+    }
 
     const auto mask = processor.getActiveDegreeMask();
     for (int i = 0; i < MadScalerProcessor::numDegrees; ++i)
