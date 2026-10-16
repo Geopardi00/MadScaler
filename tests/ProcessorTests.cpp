@@ -148,6 +148,36 @@ int main()
     notes = runBlock (processor);
     expect (hasNotes (notes, false, { 52, 55, 60, 64 }), "releasing a detected chord stops it");
 
+    // Voicings: first inversion of I in C major, then voice leading from C to F.
+    setParam (processor, "inversion", 1.0f);
+    processor.setPadPressed (0, true);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, true, { 64, 67, 72 }), "first inversion of C");
+    processor.setPadPressed (0, false);
+    runBlock (processor);
+    setParam (processor, "inversion", 0.0f);
+
+    setParam (processor, "voiceLeading", 1.0f);
+    processor.setPadPressed (0, true);
+    runBlock (processor);
+    processor.setPadPressed (0, false);
+    runBlock (processor);
+    processor.setPadPressed (3, true);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, true, { 65, 69, 72 }) || hasNotes (notes, true, { 60, 65, 69 }),
+            "voice-led F stays close to the previous chord");
+    processor.setPadPressed (3, false);
+    runBlock (processor);
+    setParam (processor, "voiceLeading", 0.0f);
+
+    setParam (processor, "bass", 1.0f);
+    processor.setPadPressed (4, true);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, true, { 55, 67, 71, 74 }), "bass note under V");
+    processor.setPadPressed (4, false);
+    runBlock (processor);
+    setParam (processor, "bass", 0.0f);
+
     // State round trip.
     setParam (processor, "scale", 1.0f);
     juce::MemoryBlock state;

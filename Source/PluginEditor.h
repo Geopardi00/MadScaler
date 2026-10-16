@@ -132,20 +132,23 @@ private:
     MadScalerProcessor& processor;
 
     juce::Label keyLabel, scaleLabel, sizeLabel, octaveLabel, velocityLabel, channelLabel;
-    juce::ComboBox keyBox, scaleBox, sizeBox;
+    juce::Label inversionLabel, voicingLabel;
+    juce::ComboBox keyBox, scaleBox, sizeBox, inversionBox, voicingBox;
+    juce::ToggleButton bassButton { "Bass note" };
+    juce::ToggleButton voiceLeadingButton { "Voice leading" };
     juce::Slider octaveSlider, velocitySlider, channelSlider;
     juce::ToggleButton keyTriggerButton { "Play chords from MIDI keys (C-B = I-VII)" };
     juce::Label scaleNotesLabel;
 
-    std::unique_ptr<ComboAttachment> keyAttachment, scaleAttachment, sizeAttachment;
+    std::unique_ptr<ComboAttachment> keyAttachment, scaleAttachment, sizeAttachment, inversionAttachment, voicingAttachment;
     std::unique_ptr<SliderAttachment> octaveAttachment, velocityAttachment, channelAttachment;
-    std::unique_ptr<ButtonAttachment> keyTriggerAttachment;
+    std::unique_ptr<ButtonAttachment> keyTriggerAttachment, bassAttachment, voiceLeadingAttachment;
 
     std::array<std::unique_ptr<madscaler::ui::ChordPad>, MadScalerProcessor::numDegrees> pads;
     madscaler::ui::DetectionPanel detectionPanel;
     madscaler::ui::ScaleKeyboard keyboard;
 
-    std::array<float, 4> lastChordSettings { -1.0f, -1.0f, -1.0f, -1.0f };
+    std::array<float, 7> lastChordSettings { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MadScalerEditor)
 };

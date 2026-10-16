@@ -411,6 +411,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     setUpLabel (octaveLabel, "Octave");
     setUpLabel (velocityLabel, "Velocity");
     setUpLabel (channelLabel, "MIDI Ch");
+    setUpLabel (inversionLabel, "Inversion");
+    setUpLabel (voicingLabel, "Voicing");
 
     auto setUpCombo = [this] (juce::ComboBox& box, const juce::String& paramID,
                               std::unique_ptr<ComboAttachment>& attachment)
@@ -424,6 +426,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     setUpCombo (keyBox, "key", keyAttachment);
     setUpCombo (scaleBox, "scale", scaleAttachment);
     setUpCombo (sizeBox, "chordSize", sizeAttachment);
+    setUpCombo (inversionBox, "inversion", inversionAttachment);
+    setUpCombo (voicingBox, "voicing", voicingAttachment);
 
     auto setUpSlider = [this] (juce::Slider& slider, const juce::String& paramID,
                                std::unique_ptr<SliderAttachment>& attachment)
@@ -442,6 +446,16 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (keyTriggerButton);
     keyTriggerAttachment = std::make_unique<ButtonAttachment> (processor.parameters, "keyTrigger", keyTriggerButton);
 
+    for (auto* button : { &bassButton, &voiceLeadingButton })
+    {
+        button->setColour (juce::ToggleButton::textColourId, Colours::textDim);
+        addAndMakeVisible (*button);
+    }
+    bassButton.setTooltip ("Add the chord root an octave below");
+    voiceLeadingButton.setTooltip ("Pick the inversion that moves least from the previous chord");
+    bassAttachment = std::make_unique<ButtonAttachment> (processor.parameters, "bass", bassButton);
+    voiceLeadingAttachment = std::make_unique<ButtonAttachment> (processor.parameters, "voiceLeading", voiceLeadingButton);
+
     scaleNotesLabel.setColour (juce::Label::textColourId, Colours::text);
     scaleNotesLabel.setFont (juce::FontOptions (14.0f));
     addAndMakeVisible (scaleNotesLabel);
@@ -456,8 +470,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (keyboard);
 
     setResizable (true, true);
-    setResizeLimits (760, 520, 1600, 1000);
-    setSize (860, 580);
+    setResizeLimits (760, 580, 1600, 1100);
+    setSize (860, 640);
     startTimerHz (30);
 }
 
@@ -508,6 +522,13 @@ void MadScalerEditor::resized()
     place (velocityLabel, velocitySlider, 100);
     place (channelLabel, channelSlider, 100);
 
+    controls = area.removeFromTop (52);
+    place (inversionLabel, inversionBox, 90);
+    place (voicingLabel, voicingBox, 110);
+    auto toggles = controls.removeFromBottom (28);
+    bassButton.setBounds (toggles.removeFromLeft (110));
+    voiceLeadingButton.setBounds (toggles.removeFromLeft (140));
+
     auto secondRow = area.removeFromTop (30);
     scaleNotesLabel.setBounds (secondRow.removeFromLeft (secondRow.getWidth() / 2));
     keyTriggerButton.setBounds (secondRow);
@@ -540,9 +561,9 @@ void MadScalerEditor::refreshChords()
 void MadScalerEditor::timerCallback()
 {
     // Rebuild the pads only when a setting that changes the chords moves.
-    std::array<float, 4> settings {};
+    std::array<float, 7> settings {};
     size_t index = 0;
-    for (auto* id : { "key", "scale", "chordSize", "octave" })
+    for (auto* id : { "key", "scale", "chordSize", "octave", "inversion", "voicing", "bass" })
         settings[index++] = processor.parameters.getRawParameterValue (id)->load();
 
     if (settings != lastChordSettings)

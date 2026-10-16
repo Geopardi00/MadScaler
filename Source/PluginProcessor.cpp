@@ -10,6 +10,10 @@ namespace ParamIDs
     static const juce::String velocity { "velocity" };
     static const juce::String channel { "channel" };
     static const juce::String keyTrigger { "keyTrigger" };
+    static const juce::String inversion { "inversion" };
+    static const juce::String voicing { "voicing" };
+    static const juce::String bass { "bass" };
+    static const juce::String voiceLeading { "voiceLeading" };
 }
 
 MadScalerProcessor::MadScalerProcessor()
@@ -23,6 +27,10 @@ MadScalerProcessor::MadScalerProcessor()
     velocityParam = parameters.getRawParameterValue (ParamIDs::velocity);
     channelParam = parameters.getRawParameterValue (ParamIDs::channel);
     keyTriggerParam = parameters.getRawParameterValue (ParamIDs::keyTrigger);
+    inversionParam = parameters.getRawParameterValue (ParamIDs::inversion);
+    voicingParam = parameters.getRawParameterValue (ParamIDs::voicing);
+    bassParam = parameters.getRawParameterValue (ParamIDs::bass);
+    voiceLeadingParam = parameters.getRawParameterValue (ParamIDs::voiceLeading);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createParameterLayout()
@@ -45,11 +53,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createPa
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::velocity, 1 }, "Velocity", 1, 127, 100));
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::channel, 1 }, "MIDI Channel", 1, 16, 1));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::keyTrigger, 1 }, "Chords From MIDI Keys", false));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::inversion, 1 }, "Inversion",
+                                                        StringArray { "Root", "1st", "2nd", "3rd" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::voicing, 1 }, "Voicing",
+                                                        StringArray { "Close", "Open", "Drop 2", "Drop 3" }, 0));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::bass, 1 }, "Bass Note", false));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::voiceLeading, 1 }, "Voice Leading", false));
     return layout;
 }
 
 void MadScalerProcessor::prepareToPlay (double, int)
 {
+    lastChordNotes.reserve (maxChordNotes);
     outputMidi.ensureSize (2048);
     outputKeyboardState.reset();
 }
@@ -76,14 +91,26 @@ int MadScalerProcessor::getScaleIndex() const
     return juce::jlimit (0, (int) madscaler::getScales().size() - 1, (int) scaleParam->load());
 }
 
-madscaler::Chord MadScalerProcessor::getChordForDegree (int degree) const
+madscaler::VoicingSettings MadScalerProcessor::getVoicingSettings() const
+{
+    madscaler::VoicingSettings settings;
+    settings.inversion = juce::jlimit (0, 3, (int) inversionParam->load());
+    settings.style = (madscaler::VoicingStyle) juce::jlimit (0, 3, (int) voicingParam->load());
+    settings.addBass = bassParam->load() > 0.5f;
+    settings.voiceLeading = voiceLeadingParam->load() > 0.5f;
+    return settings;
+}
+
+madscaler::Chord MadScalerProcessor::getChordForDegree (int degree, const std::vector<int>& previousNotes) const
 {
     const auto key = getKey();
     const auto octave = (int) octaveParam->load();
     const auto size = chordSizeParam->load() > 0.5f ? madscaler::ChordSize::seventh
                                                     : madscaler::ChordSize::triad;
     // MIDI note 60 is C4, so the tonic of octave n is 12 * (n + 1) + key.
-    return madscaler::buildDiatonicChord (key, getScaleIndex(), degree, size, 12 * (octave + 1) + key);
+    auto chord = madscaler::buildDiatonicChord (key, getScaleIndex(), degree, size, 12 * (octave + 1) + key);
+    chord.notes = madscaler::voiceChord (chord.notes, getVoicingSettings(), previousNotes);
+    return chord;
 }
 
 void MadScalerProcessor::pushUiEvent (const UiEvent& event)
@@ -160,9 +187,10 @@ void MadScalerProcessor::startChord (HeldChord& held, int degree, juce::MidiBuff
 {
     // Building a chord allocates a little; chords are tiny and this only runs on
     // pad presses and key presses, not every block.
-    const auto chord = getChordForDegree (degree);
+    const auto chord = getChordForDegree (degree, lastChordNotes);
     startNotes (held, chord.notes.data(), (int) chord.notes.size(), out, samplePos);
     held.degree = degree;
+    lastChordNotes = chord.notes;
 }
 
 void MadScalerProcessor::startNotes (HeldChord& held, const int* notes, int numNotes, juce::MidiBuffer& out, int samplePos)

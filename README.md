@@ -8,12 +8,15 @@ them to any synth in your DAW: MadScaler has no sounds of its own.
 This is an independent project. It is not affiliated with, and contains no
 code, presets or assets from, any commercial chord plugin.
 
-## Features (v0.2)
+## Features (v0.3)
 
 - Key picker (all 12 keys) and 11 seven-note scales: Major, Natural/Harmonic/
   Melodic Minor, the modes, Harmonic Major and Phrygian Dominant.
 - Grid of the seven diatonic chords with chord names, roman numerals and notes.
 - Triads or 7th chords, octave, velocity and MIDI channel controls.
+- Voicings: root position or 1st/2nd/3rd inversion, Close, Open, Drop 2 or
+  Drop 3 spacing, an optional bass note an octave below, and voice leading,
+  which picks the inversion that moves least from the previous chord.
 - Optional: trigger the chords from MIDI keys (C = I ... B = vii).
 - On-screen keyboard showing the scale and the notes being sent. Click a key
   to play a single note.
@@ -24,7 +27,7 @@ code, presets or assets from, any commercial chord plugin.
   keys and scales that fit them; click one to set the chord grid to it.
 - Settings are saved with your DAW project.
 
-Planned next: voicings and inversions, performance patterns.
+Planned next: performance patterns (strums, arpeggios, rhythms).
 
 ## Download
 
@@ -54,7 +57,8 @@ The VST3 ends up in `build/MadScaler_artefacts/Release/VST3/`.
 - `Source/ChordEngine.*` music theory: scales, diatonic chords, chord names.
   Plain C++ without JUCE.
 - `Source/ChordDetector.*` names played chords and ranks fitting keys/scales.
+- `Source/Voicing.*` inversions, open/drop voicings, bass note, voice leading.
 - `Source/PluginProcessor.*` turns pad presses and MIDI input into MIDI chords.
 - `Source/PluginEditor.*` the user interface.
-- `tests/` unit tests for the theory code, chord detection and the
+- `tests/` unit tests for the theory code, chord detection, voicings and the
   processor's MIDI output.

@@ -2,6 +2,7 @@
 
 #include "ChordDetector.h"
 #include "ChordEngine.h"
+#include "Voicing.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -63,8 +64,11 @@ public:
     // Chord detection history, newest last. Message thread only.
     std::vector<madscaler::DetectedChord> detectedChords;
 
-    // Chord for a scale degree with the current key, scale, size and octave.
-    madscaler::Chord getChordForDegree (int degree) const;
+    // Chord for a scale degree with the current key, scale, size, octave and
+    // voicing. With voice leading on, previousNotes is the chord it moves from.
+    madscaler::Chord getChordForDegree (int degree, const std::vector<int>& previousNotes = {}) const;
+
+    madscaler::VoicingSettings getVoicingSettings() const;
 
     int getKey() const;
     int getScaleIndex() const;
@@ -105,6 +109,10 @@ private:
     std::atomic<float>* velocityParam = nullptr;
     std::atomic<float>* channelParam = nullptr;
     std::atomic<float>* keyTriggerParam = nullptr;
+    std::atomic<float>* inversionParam = nullptr;
+    std::atomic<float>* voicingParam = nullptr;
+    std::atomic<float>* bassParam = nullptr;
+    std::atomic<float>* voiceLeadingParam = nullptr;
 
     // Clicks in the editor travel from the message thread to the audio thread
     // through a lock-free single-producer single-consumer queue.
@@ -133,6 +141,7 @@ private:
     std::atomic<uint32_t> activeDetectedMask { 0 };
     std::array<std::atomic<uint32_t>, 4> heldInputNotes {}; // 128 bits, one per MIDI note
     juce::MidiBuffer outputMidi;
+    std::vector<int> lastChordNotes; // audio thread only, for voice leading
     bool needsAllNotesOff = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MadScalerProcessor)
