@@ -8,7 +8,7 @@ them to any synth in your DAW: MadScaler has no sounds of its own.
 This is an independent project. It is not affiliated with, and contains no
 code, presets or assets from, any commercial chord plugin.
 
-## Features (v0.4)
+## Features (v0.5)
 
 - Key picker (all 12 keys) and 11 seven-note scales: Major, Natural/Harmonic/
   Melodic Minor, the modes, Harmonic Major and Phrygian Dominant.
@@ -31,9 +31,18 @@ code, presets or assets from, any commercial chord plugin.
   sus, 6, add9, 9ths, 11ths, 13ths, slash chords). The last 8 chords are kept
   as clickable chips that replay what you played, and MadScaler suggests the
   keys and scales that fit them; click one to set the chord grid to it.
-- Settings are saved with your DAW project.
+- Keys Lock: MIDI notes you play are snapped to the nearest note of the
+  selected scale, so every key on your keyboard is "right".
+- Progression builder: turn on "Add chords", then click chord pads or
+  detected chips to add them to a strip of up to 16 slots. Click a slot to
+  change its length (1 to 16 beats), move, duplicate or delete it. "Play"
+  loops the progression in time with your DAW (using the current pattern
+  and voicing settings), "Export MIDI" saves it as a .mid file and the
+  "Drag MIDI" handle drags it straight onto a DAW track.
+- Settings and the progression are saved with your DAW project.
 
-Ideas for later: custom rhythm patterns, swing, chord sets and progressions.
+Next up: chord colours (extensions, borrowed chords), a chord set library
+and motions (basslines and melodies).
 
 ## Download
 
@@ -65,7 +74,8 @@ The VST3 ends up in `build/MadScaler_artefacts/Release/VST3/`.
 - `Source/ChordDetector.*` names played chords and ranks fitting keys/scales.
 - `Source/Voicing.*` inversions, open/drop voicings, bass note, voice leading.
 - `Source/PatternEngine.*` tempo-synced strums, arpeggios and pulses.
+- `Source/Progression.*` chord progressions and their MIDI rendering.
 - `Source/PluginProcessor.*` turns pad presses and MIDI input into MIDI chords.
 - `Source/PluginEditor.*` the user interface.
 - `tests/` unit tests for the theory code, chord detection, voicings,
-  patterns and the processor's MIDI output.
+  patterns, progressions and the processor's MIDI output.

@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 
 #include <array>
+#include <functional>
 #include <memory>
 
 namespace madscaler::ui
@@ -19,6 +20,9 @@ namespace madscaler::ui
         void paint (juce::Graphics&) override;
         void mouseDown (const juce::MouseEvent&) override;
         void mouseUp (const juce::MouseEvent&) override;
+
+        // Called when the pad is pressed, with its scale degree.
+        std::function<void (int)> onPressed;
 
     private:
         MadScalerProcessor& processor;
@@ -70,6 +74,9 @@ namespace madscaler::ui
         void mouseDown (const juce::MouseEvent&) override;
         void mouseUp (const juce::MouseEvent&) override;
 
+        // Called when a chip holding a chord is pressed.
+        std::function<void (const madscaler::DetectedChord&)> onPressed;
+
     private:
         MadScalerProcessor& processor;
         const int slot;
@@ -77,6 +84,73 @@ namespace madscaler::ui
         madscaler::DetectedChord chord;
         bool lit = false;
         bool held = false;
+    };
+
+    // One chord of the progression. Right-click for length, move and delete.
+    class ProgressionSlotView : public juce::Component
+    {
+    public:
+        ProgressionSlotView (MadScalerProcessor& processor, int index);
+
+        void setSlot (const madscaler::ProgressionSlot* slot, bool isNextEmpty);
+        void setCurrent (bool isCurrent);
+
+        void paint (juce::Graphics&) override;
+        void mouseDown (const juce::MouseEvent&) override;
+
+    private:
+        void showMenu();
+
+        MadScalerProcessor& processor;
+        const int index;
+        bool hasSlot = false, nextEmpty = false, current = false;
+        madscaler::ProgressionSlot slot;
+    };
+
+    // Shows the progression, plays it in a loop and exports it as MIDI.
+    class ProgressionStrip : public juce::Component
+    {
+    public:
+        explicit ProgressionStrip (MadScalerProcessor& processor);
+
+        bool isAddMode() const { return addButton.getToggleState(); }
+        void addChord (const std::string& name, const std::vector<int>& notes);
+
+        // Notes of the last chord in the progression, for voice leading new ones.
+        std::vector<int> lastChordNotes() const;
+
+        // Called regularly from the editor's timer.
+        void update();
+        void refresh();
+
+        void paint (juce::Graphics&) override;
+        void resized() override;
+
+    private:
+        class DragHandle : public juce::Label
+        {
+        public:
+            explicit DragHandle (ProgressionStrip& owner);
+            void mouseDrag (const juce::MouseEvent&) override;
+            void mouseUp (const juce::MouseEvent&) override;
+
+        private:
+            ProgressionStrip& owner;
+            bool dragging = false;
+        };
+
+        juce::File writeMidiFile (const juce::File& file) const;
+        void exportMidi();
+
+        MadScalerProcessor& processor;
+        juce::Label titleLabel;
+        juce::TextButton addButton { "Add chords" }, playButton { "Play" }, clearButton { "Clear" },
+                         exportButton { "Export MIDI" };
+        DragHandle dragHandle { *this };
+        std::array<std::unique_ptr<ProgressionSlotView>, madscaler::Progression::maxSlots> slots;
+        std::unique_ptr<juce::FileChooser> chooser;
+        size_t lastSize = 0;
+        int lastCurrent = -2;
     };
 
     // Names the chord coming in on MIDI, keeps a history of the chords played and
@@ -101,7 +175,10 @@ namespace madscaler::ui
 
         juce::Label titleLabel, currentLabel, suggestionsLabel;
         juce::TextButton clearButton { "Clear" };
+    public:
         std::array<std::unique_ptr<DetectedChordChip>, MadScalerProcessor::maxDetectedChords> chips;
+
+    private:
         std::array<juce::TextButton, 3> suggestionButtons;
         std::vector<madscaler::KeySuggestion> suggestions;
 
@@ -139,17 +216,19 @@ private:
     juce::ToggleButton bassButton { "Bass note" };
     juce::ToggleButton voiceLeadingButton { "Voice leading" };
     juce::Slider octaveSlider, velocitySlider, channelSlider;
-    juce::ToggleButton keyTriggerButton { "Play chords from MIDI keys (C-B = I-VII)" };
+    juce::ToggleButton keyTriggerButton { "Chords from MIDI keys (C-B = I-VII)" };
+    juce::ToggleButton keysLockButton { "Keys Lock" };
     juce::Label scaleNotesLabel;
 
     std::unique_ptr<ComboAttachment> keyAttachment, scaleAttachment, sizeAttachment, inversionAttachment, voicingAttachment,
                                      patternAttachment, rateAttachment;
     std::unique_ptr<SliderAttachment> octaveAttachment, velocityAttachment, channelAttachment,
                                       gateAttachment, arpOctavesAttachment, strumAttachment;
-    std::unique_ptr<ButtonAttachment> keyTriggerAttachment, bassAttachment, voiceLeadingAttachment;
+    std::unique_ptr<ButtonAttachment> keyTriggerAttachment, bassAttachment, voiceLeadingAttachment, keysLockAttachment;
 
     std::array<std::unique_ptr<madscaler::ui::ChordPad>, MadScalerProcessor::numDegrees> pads;
     madscaler::ui::DetectionPanel detectionPanel;
+    madscaler::ui::ProgressionStrip progressionStrip;
     madscaler::ui::ScaleKeyboard keyboard;
 
     std::array<float, 7> lastChordSettings { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
