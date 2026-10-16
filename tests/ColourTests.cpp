@@ -57,7 +57,7 @@ int main()
     const auto two = getChordColours (0, 0, 1, false, 60);
     expect (names (two, "Extensions") == "Dm6 Dm7 Dm9 Dmadd9 Dm11 Dm13 Dsus2 Dsus4",
             "ii extensions: " + names (two, "Extensions"));
-    expect (names (two, "Secondary") == "A7 C#dim7 D#7", "ii secondary: " + names (two, "Secondary"));
+    expect (names (two, "Secondary") == "A7 C#dim7 Eb7", "ii secondary: " + names (two, "Secondary"));
 
     if (const auto* chord = find (two, "Secondary", "A7"))
     {
@@ -76,7 +76,7 @@ int main()
 
     // Borrowed chords in C major.
     const auto six = getChordColours (0, 0, 5, false, 60);
-    if (const auto* chord = find (six, "Borrowed", "G#"))
+    if (const auto* chord = find (six, "Borrowed", "Ab"))
         expect (chord->label == "bVI Minor", "bVI from minor, label: " + chord->label);
     else
         expect (false, "bVI borrowed from minor: " + names (six, "Borrowed"));
@@ -103,6 +103,10 @@ int main()
     // A minor (natural minor, index 1): VI and VII are borrowed from major as vi/vii.
     const auto minorOne = getChordColours (9, 1, 0, false, 57);
     expect (find (minorOne, "Borrowed", "A") != nullptr, "I borrowed from major in A minor");
+
+    // Spelling follows the key: F major and C minor use flats.
+    expect (names (getChordColours (5, 0, 3, false, 65), "Extensions").rfind ("Bb6", 0) == 0, "IV of F is Bb");
+    expect (find (getChordColours (0, 1, 5, false, 60), "Extensions", "Abmaj7") != nullptr, "VI of C minor is Ab");
 
     // Next chords.
     expect (suggestNextDegrees (0, 4) == std::vector<int> { 0, 5, 3 }, "V goes to I, vi, IV");

@@ -126,6 +126,10 @@ namespace madscaler
         std::vector<ColourGroup> groups;
         std::vector<std::vector<int>> seen;
 
+        // Chord roots are spelled for the key; secondary chords for the chord they lead to.
+        int spellingKey = keyPitchClass, spellingScale = scaleIndex;
+        auto rootName = [&] (int pitchClass) { return spellNote (pitchClass, spellingKey, spellingScale); };
+
         auto add = [&] (ColourGroup& group, const std::string& suffix, const std::string& label,
                         int chordRoot, const std::vector<int>& notes)
         {
@@ -134,7 +138,7 @@ namespace madscaler
                 return;
 
             seen.push_back (pcs);
-            group.chords.push_back ({ getNoteName (chordRoot) + suffix, label, chordRoot, notes });
+            group.chords.push_back ({ rootName (chordRoot) + suffix, label, chordRoot, notes });
         };
 
         // The plain diatonic chord counts as seen, so borrowed chords that match it are skipped.
@@ -190,7 +194,7 @@ namespace madscaler
             if (chord.quality == ChordQuality::unknown)
                 continue;
 
-            const auto suffix = chord.name.substr (getNoteName (chord.rootPitchClass).size());
+            const auto suffix = getQualitySuffix (chord.quality);
             add (borrowed, suffix, borrowedRoman (keyPitchClass, degree, chord) + " " + parallel.shortName,
                  chord.rootPitchClass, chord.notes);
         }
@@ -203,6 +207,10 @@ namespace madscaler
         {
             const auto targetQuality = identifyQuality ({ third, fifth });
             const auto target = getRomanNumeral (degree, targetQuality);
+
+            // Spelled as in the major key of the target: A7 and C#dim7 lead to Dm.
+            spellingKey = rootPitchClass;
+            spellingScale = 0;
 
             // Roots sit in the octave above the tonic, like the diatonic chords.
             auto rootNoteFor = [&] (int pitchClass) { return baseNote + wrap (pitchClass - keyPitchClass); };
@@ -260,7 +268,8 @@ namespace madscaler
         const auto root = circlePitchClass (position, minor);
         ColourChord chord;
         chord.rootPitchClass = root;
-        chord.name = getNoteName (root) + (minor ? "m" : "");
+        // Flat side of the circle (Db to F, and their relative minors) uses flats.
+        chord.name = getNoteName (root, ((position % 12) + 12) % 12 >= 7) + (minor ? "m" : "");
         chord.label = minor ? "minor" : "major";
         chord.notes = notesFrom (baseNote + root, { 0, minor ? 3 : 4, 7 });
         return chord;

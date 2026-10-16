@@ -8,7 +8,7 @@ them to any synth in your DAW: MadScaler has no sounds of its own.
 This is an independent project. It is not affiliated with, and contains no
 code, presets or assets from, any commercial chord plugin.
 
-## Features (v0.6)
+## Features (v0.7)
 
 - Key picker (all 12 keys) and 11 seven-note scales: Major, Natural/Harmonic/
   Melodic Minor, the modes, Harmonic Major and Phrygian Dominant.
@@ -48,9 +48,20 @@ code, presets or assets from, any commercial chord plugin.
   are marked "next".
 - Circle of Fifths: the chords of the current scale are highlighted. Click a
   segment to play that chord; right-click it to change key.
+- Progression library: 117 of MadScaler's own progressions, sorted by style
+  (pop, rock, metal, EDM, synthwave, hip-hop, R&B, gospel, funk, jazz, lo-fi,
+  blues, folk, Latin, reggae, classical), mood (happy, heroic, epic, dark,
+  sad, dreamy and more) and use (film score, trailer, game music, battle,
+  fantasy, sci-fi, horror, ambient, meditation and more). Pick one in the
+  Library tab and Load (or Append) it: it arrives in the current key,
+  voice-led, and the pads switch to its scale.
+- Edit any chord of the progression: click it to hear it and select it, then
+  press a pad, colour, Circle of Fifths or detected chord to replace it
+  (the length stays). Right-click a chord for "Replace with" the scale's
+  chords, length, move, duplicate and delete. Then Drag MIDI into your DAW.
 - Settings and the progression are saved with your DAW project.
 
-Next up: a chord set library and motions (basslines and melodies).
+Next up: motions (basslines and melodies).
 
 ## Download
 
@@ -84,7 +95,8 @@ The VST3 ends up in `build/MadScaler_artefacts/Release/VST3/`.
 - `Source/PatternEngine.*` tempo-synced strums, arpeggios and pulses.
 - `Source/Progression.*` chord progressions and their MIDI rendering.
 - `Source/ChordColours.*` extensions, borrowed and secondary chords, next-chord hints.
+- `Source/ChordLibrary.*` the progression library and its Roman numeral parser.
 - `Source/PluginProcessor.*` turns pad presses and MIDI input into MIDI chords.
 - `Source/PluginEditor.*` the user interface.
 - `tests/` unit tests for the theory code, chord detection, voicings,
-  patterns, progressions, chord colours and the processor's MIDI output.
+  patterns, progressions, chord colours, the library and the processor's MIDI output.

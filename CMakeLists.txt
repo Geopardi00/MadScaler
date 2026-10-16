@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(MadScaler VERSION 0.6.0 LANGUAGES C CXX)
+project(MadScaler VERSION 0.7.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,7 +9,7 @@ option(MADSCALER_BUILD_PLUGIN "Build the JUCE plugin" ON)
 option(MADSCALER_BUILD_TESTS "Build the music theory unit tests" ON)
 
 # Music theory core: plain C++, no JUCE, so it can be unit tested anywhere.
-add_library(madscaler_core STATIC Source/ChordEngine.cpp Source/ChordDetector.cpp Source/Voicing.cpp Source/PatternEngine.cpp Source/Progression.cpp Source/ChordColours.cpp)
+add_library(madscaler_core STATIC Source/ChordEngine.cpp Source/ChordDetector.cpp Source/Voicing.cpp Source/PatternEngine.cpp Source/Progression.cpp Source/ChordColours.cpp Source/ChordLibrary.cpp)
 target_include_directories(madscaler_core PUBLIC Source)
 set_target_properties(madscaler_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -38,6 +38,10 @@ if(MADSCALER_BUILD_TESTS)
     add_executable(madscaler_colour_tests tests/ColourTests.cpp)
     target_link_libraries(madscaler_colour_tests PRIVATE madscaler_core)
     add_test(NAME colours COMMAND madscaler_colour_tests)
+
+    add_executable(madscaler_library_tests tests/LibraryTests.cpp)
+    target_link_libraries(madscaler_library_tests PRIVATE madscaler_core)
+    add_test(NAME library COMMAND madscaler_library_tests)
 endif()
 
 if(MADSCALER_BUILD_PLUGIN)

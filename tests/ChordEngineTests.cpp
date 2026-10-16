@@ -109,6 +109,17 @@ int main()
                         }
                 }
 
+    // Spelling in sharp and flat keys.
+    expectEqual (keyUsesFlats (0, 0), false, "C major uses no flats");
+    expectEqual (keyUsesFlats (5, 0), true, "F major uses flats");
+    expectEqual (keyUsesFlats (0, 1), true, "C minor uses flats");
+    expectEqual (keyUsesFlats (9, 2), false, "A harmonic minor uses sharps");
+    expectEqual (spellNote (10, 5, 0), std::string ("Bb"), "Bb in F major");
+    expectEqual (spellNote (8, 0, 0), std::string ("Ab"), "borrowed bVI in C is Ab");
+    expectEqual (spellNote (6, 0, 0), std::string ("F#"), "#4 in C is F#");
+    expectEqual (spellNote (8, 9, 2), std::string ("G#"), "leading tone of A minor is G#");
+    expectEqual (buildDiatonicChord (10, 0, 3, ChordSize::triad, 58).name, std::string ("Eb"), "IV of Bb major is Eb");
+
     if (failures == 0)
         std::cout << "All chord engine tests passed\n";
 
