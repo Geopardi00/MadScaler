@@ -3,6 +3,7 @@
 #include "ChordDetector.h"
 #include "ChordEngine.h"
 #include "PatternEngine.h"
+#include "Progression.h"
 #include "Voicing.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -10,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <optional>
 
 // MadScaler makes no sound. It turns chord pad clicks (and, optionally, incoming
 // MIDI keys) into MIDI chords on its MIDI output, which the DAW routes to any synth.
@@ -65,6 +67,23 @@ public:
     // Chord detection history, newest last. Message thread only.
     std::vector<madscaler::DetectedChord> detectedChords;
 
+    // The progression being built. Read it on the message thread; change it
+    // only through setProgression so the audio thread gets a copy.
+    const madscaler::Progression& getProgression() const { return progression; }
+    void setProgression (const madscaler::Progression& newProgression);
+
+    // Plays the progression in a loop: locked to the DAW's position while it
+    // plays, otherwise from the start at the DAW's tempo.
+    void setProgressionPlaying (bool shouldPlay) { progressionPlaying.store (shouldPlay); }
+    bool isProgressionPlaying() const { return progressionPlaying.load(); }
+
+    // Index of the progression chord sounding now, or -1.
+    int getCurrentProgressionSlot() const { return currentProgressionSlot.load(); }
+
+    // The pattern currently selected, or nullopt when Pattern is Off.
+    std::optional<madscaler::PatternSettings> getPatternSettings() const;
+    double getLastBpm() const { return lastBpm.load(); }
+
     // Chord for a scale degree with the current key, scale, size, octave and
     // voicing. With voice leading on, previousNotes is the chord it moves from.
     madscaler::Chord getChordForDegree (int degree, const std::vector<int>& previousNotes = {}) const;
@@ -107,6 +126,9 @@ private:
     void syncPattern (int samplePos);
     void stopPattern (int samplePos);
     void flushPatternEvents (juce::MidiBuffer& out);
+    void readPlayHead();
+    void playProgression (int numSamples, juce::MidiBuffer& out);
+    int applyKeysLock (const juce::MidiMessage& message, juce::MidiMessage& result);
 
     std::atomic<float>* keyParam = nullptr;
     std::atomic<float>* scaleParam = nullptr;
@@ -124,6 +146,7 @@ private:
     std::atomic<float>* gateParam = nullptr;
     std::atomic<float>* arpOctavesParam = nullptr;
     std::atomic<float>* strumParam = nullptr;
+    std::atomic<float>* keysLockParam = nullptr;
 
     // Clicks in the editor travel from the message thread to the audio thread
     // through a lock-free single-producer single-consumer queue.
@@ -165,6 +188,46 @@ private:
     uint32_t chordSerialCounter = 0;
     uint32_t patternSerial = 0;
     double currentSampleRate = 44100.0;
+
+    // Host transport, read once per block.
+    double hostBpm = 120.0;
+    double hostPpq = 0.0;
+    bool hostPlaying = false;
+    std::atomic<double> lastBpm { 120.0 };
+
+    // Progression: edited on the message thread, copied for the audio thread
+    // into fixed-size storage under a spin lock (the audio thread only try-locks).
+    struct ProgressionSnapshot
+    {
+        struct Slot
+        {
+            int numNotes = 0;
+            std::array<int, maxChordNotes> notes {};
+            double lengthBeats = 4.0;
+        };
+
+        int numSlots = 0;
+        std::array<Slot, madscaler::Progression::maxSlots> slots {};
+        double totalBeats = 0.0;
+
+        int slotAt (double beat) const;
+    };
+
+    madscaler::Progression progression;
+    juce::SpinLock progressionLock;
+    ProgressionSnapshot pendingSnapshot;
+    std::atomic<bool> snapshotChanged { false };
+    ProgressionSnapshot audioSnapshot;
+    std::atomic<bool> progressionPlaying { false };
+    std::atomic<int> currentProgressionSlot { -1 };
+    bool wasProgressionPlaying = false;
+    double freeProgressionBeats = 0.0;
+    int playingSlot = -1;
+    std::array<HeldChord, 2> progressionHeld {};
+    int progressionHolder = 0;
+
+    // Keys Lock: the scale note each held input note was moved to, per channel.
+    std::array<std::array<int8_t, 128>, 16> keysLockMap {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MadScalerProcessor)
 };

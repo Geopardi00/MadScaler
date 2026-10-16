@@ -236,7 +236,12 @@ namespace madscaler
         }
 
         if (wasActive)
-            return; // the running arpeggio or pulse carries on with the new notes
+        {
+            // The running arpeggio or pulse keeps its timing; an arpeggio starts
+            // again from the first note of the new chord on its next step.
+            arpPosition = 0;
+            return;
+        }
 
         // Starting from silence: play the first step right away, then follow the grid.
         releaseAll (time, out);

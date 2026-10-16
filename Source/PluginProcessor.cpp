@@ -19,6 +19,7 @@ namespace ParamIDs
     static const juce::String gate { "gate" };
     static const juce::String arpOctaves { "arpOctaves" };
     static const juce::String strum { "strum" };
+    static const juce::String keysLock { "keysLock" };
 }
 
 MadScalerProcessor::MadScalerProcessor()
@@ -41,6 +42,10 @@ MadScalerProcessor::MadScalerProcessor()
     gateParam = parameters.getRawParameterValue (ParamIDs::gate);
     arpOctavesParam = parameters.getRawParameterValue (ParamIDs::arpOctaves);
     strumParam = parameters.getRawParameterValue (ParamIDs::strum);
+    keysLockParam = parameters.getRawParameterValue (ParamIDs::keysLock);
+
+    for (auto& channelMap : keysLockMap)
+        channelMap.fill (-1);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createParameterLayout()
@@ -80,6 +85,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createPa
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::arpOctaves, 1 }, "Arp Octaves", 1, 3, 1));
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::strum, 1 }, "Strum Time", 5, 150, 30,
                                                      AudioParameterIntAttributes().withLabel ("ms")));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::keysLock, 1 }, "Keys Lock", false));
     return layout;
 }
 
@@ -272,6 +278,9 @@ void MadScalerProcessor::stopAllChords (juce::MidiBuffer& out, int samplePos)
         stopChord (held, out, samplePos);
     for (auto& held : detectedChordsHeld)
         stopChord (held, out, samplePos);
+    for (auto& held : progressionHeld)
+        stopChord (held, out, samplePos);
+    playingSlot = -1;
 }
 
 void MadScalerProcessor::updateActiveDegreeMask()
@@ -292,7 +301,7 @@ void MadScalerProcessor::updateActiveDegreeMask()
     activeDetectedMask.store (detectedMask);
 }
 
-void MadScalerProcessor::beginPatternBlock (int numSamples, juce::MidiBuffer& out)
+void MadScalerProcessor::beginPatternBlock (int, juce::MidiBuffer& out)
 {
     const auto choice = juce::jlimit (0, 7, (int) patternParam->load());
 
@@ -310,6 +319,16 @@ void MadScalerProcessor::beginPatternBlock (int numSamples, juce::MidiBuffer& ou
     if (! patternActive)
         return;
 
+    patternEngine.setSettings (*getPatternSettings());
+    patternEngine.beginBlock (currentSampleRate, hostBpm, hostPlaying, hostPpq);
+}
+
+std::optional<madscaler::PatternSettings> MadScalerProcessor::getPatternSettings() const
+{
+    const auto choice = juce::jlimit (0, 7, (int) patternParam->load());
+    if (choice == 0)
+        return std::nullopt;
+
     static constexpr double rateBeats[] = { 1.0, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125 };
 
     madscaler::PatternSettings settings;
@@ -319,27 +338,30 @@ void MadScalerProcessor::beginPatternBlock (int numSamples, juce::MidiBuffer& ou
     settings.octaves = juce::jlimit (1, 3, (int) arpOctavesParam->load());
     settings.strumMs = strumParam->load();
     settings.velocity = juce::jlimit (1, 127, (int) velocityParam->load());
-    patternEngine.setSettings (settings);
+    return settings;
+}
 
-    double bpm = 120.0, ppq = 0.0;
-    bool playing = false;
+void MadScalerProcessor::readPlayHead()
+{
+    hostBpm = 120.0;
+    hostPpq = 0.0;
+    hostPlaying = false;
 
     if (auto* hostPlayHead = getPlayHead())
     {
         if (const auto position = hostPlayHead->getPosition())
         {
-            if (const auto hostBpm = position->getBpm())
-                bpm = *hostBpm;
-            if (const auto hostPpq = position->getPpqPosition())
+            if (const auto bpm = position->getBpm())
+                hostBpm = *bpm > 1.0 ? *bpm : 120.0;
+            if (const auto ppq = position->getPpqPosition())
             {
-                ppq = *hostPpq;
-                playing = position->getIsPlaying();
+                hostPpq = *ppq;
+                hostPlaying = position->getIsPlaying();
             }
         }
     }
 
-    juce::ignoreUnused (numSamples);
-    patternEngine.beginBlock (currentSampleRate, bpm, playing, ppq);
+    lastBpm.store (hostBpm);
 }
 
 void MadScalerProcessor::syncPattern (int samplePos)
@@ -358,6 +380,7 @@ void MadScalerProcessor::syncPattern (int samplePos)
     for (const auto& held : padChords)          consider (held);
     for (const auto& held : keyChords)          consider (held);
     for (const auto& held : detectedChordsHeld) consider (held);
+    for (const auto& held : progressionHeld)  consider (held);
 
     const auto serial = newest != nullptr ? newest->serial : 0u;
     if (serial == patternSerial)
@@ -392,6 +415,176 @@ void MadScalerProcessor::flushPatternEvents (juce::MidiBuffer& out)
     patternEvents.clear();
 }
 
+int MadScalerProcessor::ProgressionSnapshot::slotAt (double beat) const
+{
+    if (numSlots == 0 || totalBeats <= 0.0)
+        return -1;
+
+    auto position = std::fmod (beat, totalBeats);
+    if (position < 0.0)
+        position += totalBeats;
+
+    double end = 0.0;
+    for (int i = 0; i < numSlots; ++i)
+    {
+        end += slots[(size_t) i].lengthBeats;
+        if (position < end - 1.0e-9)
+            return i;
+    }
+    return numSlots - 1;
+}
+
+void MadScalerProcessor::setProgression (const madscaler::Progression& newProgression)
+{
+    progression = newProgression;
+    if ((int) progression.slots.size() > madscaler::Progression::maxSlots)
+        progression.slots.resize ((size_t) madscaler::Progression::maxSlots);
+
+    ProgressionSnapshot snapshot;
+    for (const auto& slot : progression.slots)
+    {
+        auto& target = snapshot.slots[(size_t) snapshot.numSlots++];
+        target.numNotes = juce::jmin ((int) slot.notes.size(), maxChordNotes);
+        for (int i = 0; i < target.numNotes; ++i)
+            target.notes[(size_t) i] = juce::jlimit (0, 127, slot.notes[(size_t) i]);
+        target.lengthBeats = juce::jmax (0.25, slot.lengthBeats);
+        snapshot.totalBeats += target.lengthBeats;
+    }
+
+    const juce::SpinLock::ScopedLockType lock (progressionLock);
+    pendingSnapshot = snapshot;
+    snapshotChanged.store (true);
+}
+
+void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
+{
+    if (snapshotChanged.load())
+    {
+        const juce::SpinLock::ScopedTryLockType lock (progressionLock);
+        if (lock.isLocked())
+        {
+            audioSnapshot = pendingSnapshot;
+            snapshotChanged.store (false);
+            playingSlot = -1; // pick up edits to the sounding chord too
+        }
+    }
+
+    const auto playing = progressionPlaying.load() && audioSnapshot.numSlots > 0;
+
+    auto setSlot = [&] (int slot, int pos)
+    {
+        if (slot == playingSlot)
+            return;
+
+        playingSlot = slot;
+
+        // Two holders take turns: the new chord starts before the old one stops,
+        // so notes the chords share keep ringing instead of being re-struck.
+        auto& previous = progressionHeld[(size_t) progressionHolder];
+        progressionHolder ^= 1;
+        auto& next = progressionHeld[(size_t) progressionHolder];
+
+        if (slot >= 0)
+        {
+            const auto& data = audioSnapshot.slots[(size_t) slot];
+            startNotes (next, data.notes.data(), data.numNotes, out, pos);
+        }
+        stopChord (previous, out, pos);
+        syncPattern (pos);
+    };
+
+    if (! playing)
+    {
+        if (wasProgressionPlaying)
+            setSlot (-1, 0);
+        wasProgressionPlaying = false;
+        currentProgressionSlot.store (-1);
+        return;
+    }
+
+    if (! wasProgressionPlaying)
+        freeProgressionBeats = 0.0; // start from the top when not following the DAW
+    wasProgressionPlaying = true;
+
+    const auto beatsPerSample = hostBpm / (60.0 * currentSampleRate);
+    const auto startBeat = hostPlaying ? hostPpq : freeProgressionBeats;
+
+    setSlot (audioSnapshot.slotAt (startBeat), 0);
+
+    // Chord changes inside this block, at the exact sample. Slot boundaries are
+    // walked in order from the start of the loop containing startBeat.
+    const auto endBeat = startBeat + numSamples * beatsPerSample;
+    auto boundary = std::floor (startBeat / audioSnapshot.totalBeats) * audioSnapshot.totalBeats;
+    bool done = false;
+
+    for (int loop = 0; loop < 64 && ! done; ++loop)
+    {
+        for (int i = 0; i < audioSnapshot.numSlots; ++i)
+        {
+            boundary += audioSnapshot.slots[(size_t) i].lengthBeats;
+            if (boundary >= endBeat - 1.0e-9)
+            {
+                done = true;
+                break;
+            }
+            if (boundary > startBeat + 1.0e-9)
+            {
+                const auto pos = juce::jlimit (0, numSamples - 1, (int) std::ceil ((boundary - startBeat) / beatsPerSample));
+                setSlot (audioSnapshot.slotAt (boundary + 1.0e-9), pos);
+            }
+        }
+    }
+
+    if (! hostPlaying)
+        freeProgressionBeats = endBeat;
+
+    currentProgressionSlot.store (playingSlot);
+}
+
+int MadScalerProcessor::applyKeysLock (const juce::MidiMessage& message, juce::MidiMessage& result)
+{
+    result = message;
+    if (! message.isNoteOnOrOff())
+        return -1;
+
+    const auto channel = juce::jlimit (1, 16, message.getChannel());
+    const auto note = message.getNoteNumber();
+    auto& mapped = keysLockMap[(size_t) channel - 1][(size_t) note];
+    auto target = note;
+
+    if (message.isNoteOn())
+    {
+        if (keysLockParam->load() > 0.5f)
+        {
+            // Move to the nearest scale note; ties go down.
+            for (int distance = 0; distance < 12; ++distance)
+            {
+                if (note - distance >= 0 && madscaler::isInScale (note - distance, getKey(), getScaleIndex()))
+                {
+                    target = note - distance;
+                    break;
+                }
+                if (note + distance <= 127 && madscaler::isInScale (note + distance, getKey(), getScaleIndex()))
+                {
+                    target = note + distance;
+                    break;
+                }
+            }
+        }
+        mapped = (int8_t) target;
+    }
+    else
+    {
+        // Release whatever note this key turned into when it was pressed.
+        if (mapped >= 0)
+            target = mapped;
+        mapped = -1;
+    }
+
+    result.setNoteNumber (target);
+    return target;
+}
+
 // Maps a white key to a scale degree: C plays degree 1, D degree 2 ... B degree 7.
 static int degreeForWhiteKey (int midiNote)
 {
@@ -419,6 +612,7 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     out.clear();
 
     patternEvents.clear();
+    readPlayHead();
     beginPatternBlock (buffer.getNumSamples(), out);
 
     if (needsAllNotesOff)
@@ -502,11 +696,14 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             }
         }
 
-        // Notes that pass through are what chord detection listens to.
+        // Keys Lock moves notes into the scale. Notes that pass through are
+        // what chord detection listens to.
+        juce::MidiMessage passed;
+        const auto passedNote = applyKeysLock (message, passed);
         if (message.isNoteOn())
-            setHeldInputNote (message.getNoteNumber(), true);
+            setHeldInputNote (passedNote, true);
         else if (message.isNoteOff())
-            setHeldInputNote (message.getNoteNumber(), false);
+            setHeldInputNote (passedNote, false);
 
         if (message.isAllNotesOff() || message.isAllSoundOff())
         {
@@ -516,8 +713,10 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                 word.store (0);
         }
 
-        out.addEvent (message, pos);
+        out.addEvent (passed, pos);
     }
+
+    playProgression (buffer.getNumSamples(), out);
 
     if (patternActive)
         patternEngine.endBlock (buffer.getNumSamples(), patternEvents);
@@ -530,15 +729,52 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
 void MadScalerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = parameters.copyState().createXml())
+    auto state = parameters.copyState();
+
+    juce::ValueTree progressionTree ("Progression");
+    for (const auto& slot : progression.slots)
+    {
+        juce::StringArray notes;
+        for (auto note : slot.notes)
+            notes.add (juce::String (note));
+
+        juce::ValueTree slotTree ("Slot");
+        slotTree.setProperty ("name", juce::String::fromUTF8 (slot.name.c_str()), nullptr);
+        slotTree.setProperty ("notes", notes.joinIntoString (" "), nullptr);
+        slotTree.setProperty ("beats", slot.lengthBeats, nullptr);
+        progressionTree.appendChild (slotTree, nullptr);
+    }
+    state.removeChild (state.getChildWithName ("Progression"), nullptr);
+    state.appendChild (progressionTree, nullptr);
+
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
 void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (parameters.state.getType()))
-            parameters.replaceState (juce::ValueTree::fromXml (*xml));
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml == nullptr || ! xml->hasTagName (parameters.state.getType()))
+        return;
+
+    auto state = juce::ValueTree::fromXml (*xml);
+
+    madscaler::Progression restored;
+    const auto progressionTree = state.getChildWithName ("Progression");
+    for (const auto& slotTree : progressionTree)
+    {
+        madscaler::ProgressionSlot slot;
+        slot.name = slotTree.getProperty ("name").toString().toStdString();
+        for (const auto& token : juce::StringArray::fromTokens (slotTree.getProperty ("notes").toString(), " ", ""))
+            if (token.isNotEmpty())
+                slot.notes.push_back (token.getIntValue());
+        slot.lengthBeats = (double) slotTree.getProperty ("beats", 4.0);
+        restored.slots.push_back (slot);
+    }
+
+    state.removeChild (progressionTree, nullptr);
+    parameters.replaceState (state);
+    setProgression (restored);
 }
 
 juce::AudioProcessorEditor* MadScalerProcessor::createEditor()

@@ -205,6 +205,57 @@ int main()
     processor.setPadPressed (1, false);
     runBlock (processor);
 
+    // Keys Lock: C# in C major becomes C, and its release releases C.
+    setParam (processor, "keysLock", 1.0f);
+    in.clear();
+    in.addEvent (juce::MidiMessage::noteOn (1, 61, (juce::uint8) 90), 0);
+    notes = runBlock (processor, in);
+    expect (hasNotes (notes, true, { 60 }), "Keys Lock moves C# to C");
+    setParam (processor, "keysLock", 0.0f); // turning it off while held must still release C
+    in.clear();
+    in.addEvent (juce::MidiMessage::noteOff (1, 61), 0);
+    notes = runBlock (processor, in);
+    expect (hasNotes (notes, false, { 60 }), "releasing the key releases the moved note");
+
+    // Progression: C for 4 beats then Am for 4, played without a host
+    // (120 bpm, 48 kHz: 4 beats = 96000 samples = 375 blocks).
+    {
+        madscaler::Progression progression;
+        progression.slots.push_back ({ "C", { 60, 64, 67 }, 4.0 });
+        progression.slots.push_back ({ "Am", { 57, 60, 64 }, 4.0 });
+        processor.setProgression (progression);
+        processor.setProgressionPlaying (true);
+
+        std::vector<Note> first, second;
+        for (int block = 0; block < 375; ++block)
+            for (const auto& note : runBlock (processor))
+                first.push_back (note);
+        expect (hasNotes (first, true, { 60, 64, 67 }), "progression starts with C");
+        expect (processor.getCurrentProgressionSlot() == 0, "first slot is current");
+
+        for (int block = 0; block < 10; ++block)
+            for (const auto& note : runBlock (processor))
+                second.push_back (note);
+        expect (hasNotes (second, true, { 57 }) && hasNotes (second, false, { 67 }),
+                "Am follows after four beats, keeping the shared notes");
+        expect (processor.getCurrentProgressionSlot() == 1, "second slot is current");
+
+        processor.setProgressionPlaying (false);
+        notes = runBlock (processor);
+        expect (hasNotes (notes, false, { 57, 60, 64 }), "stopping releases the chord");
+        expect (processor.getCurrentProgressionSlot() == -1, "no slot after stopping");
+
+        // The progression is saved with the plugin state.
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        expect (reloaded.getProgression().slots.size() == 2
+                    && reloaded.getProgression().slots[1].name == "Am"
+                    && reloaded.getProgression().slots[1].notes == std::vector<int> { 57, 60, 64 },
+                "progression survives a save and reload");
+    }
+
     // State round trip.
     setParam (processor, "scale", 1.0f);
     juce::MemoryBlock state;

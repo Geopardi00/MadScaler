@@ -73,6 +73,8 @@ namespace madscaler::ui
     {
         held = true;
         processor.setPadPressed (degree, true);
+        if (onPressed)
+            onPressed (degree);
     }
 
     void ChordPad::mouseUp (const juce::MouseEvent&)
@@ -200,6 +202,8 @@ namespace madscaler::ui
 
         held = true;
         processor.setDetectedChordPressed (slot, chord.notes, true);
+        if (onPressed)
+            onPressed (chord);
     }
 
     void DetectedChordChip::mouseUp (const juce::MouseEvent&)
@@ -209,6 +213,305 @@ namespace madscaler::ui
             held = false;
             processor.setDetectedChordPressed (slot, {}, false);
         }
+    }
+
+    ProgressionSlotView::ProgressionSlotView (MadScalerProcessor& p, int i) : processor (p), index (i) {}
+
+    void ProgressionSlotView::setSlot (const madscaler::ProgressionSlot* newSlot, bool isNextEmpty)
+    {
+        hasSlot = newSlot != nullptr;
+        if (hasSlot)
+            slot = *newSlot;
+        nextEmpty = isNextEmpty;
+        repaint();
+    }
+
+    void ProgressionSlotView::setCurrent (bool isCurrent)
+    {
+        if (current != isCurrent)
+        {
+            current = isCurrent;
+            repaint();
+        }
+    }
+
+    void ProgressionSlotView::paint (juce::Graphics& g)
+    {
+        auto area = getLocalBounds().toFloat().reduced (2.0f);
+
+        if (! hasSlot)
+        {
+            g.setColour (Colours::pad.withAlpha (nextEmpty ? 0.9f : 0.35f));
+            g.drawRoundedRectangle (area, 6.0f, 1.0f);
+            if (nextEmpty)
+            {
+                g.setColour (Colours::textDim.withAlpha (0.6f));
+                g.setFont (juce::FontOptions (18.0f));
+                g.drawText ("+", area, juce::Justification::centred);
+            }
+            return;
+        }
+
+        g.setColour (current ? Colours::padLit : Colours::pad);
+        g.fillRoundedRectangle (area, 6.0f);
+
+        auto text = area.reduced (4.0f, 2.0f);
+        g.setColour (Colours::text);
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        g.drawFittedText (juce::String::fromUTF8 (slot.name.c_str()), text.removeFromTop (text.getHeight() * 0.6f).toNearestInt(),
+                          juce::Justification::centred, 1);
+        g.setColour (current ? Colours::text : Colours::textDim);
+        g.setFont (juce::FontOptions (11.0f));
+        const auto beats = juce::String (slot.lengthBeats, std::abs (slot.lengthBeats - std::round (slot.lengthBeats)) < 1.0e-6 ? 0 : 1);
+        g.drawFittedText (beats + (std::abs (slot.lengthBeats - 1.0) < 1.0e-6 ? " beat" : " beats"), text.toNearestInt(), juce::Justification::centred, 1);
+    }
+
+    void ProgressionSlotView::mouseDown (const juce::MouseEvent&)
+    {
+        if (hasSlot)
+            showMenu();
+    }
+
+    void ProgressionSlotView::showMenu()
+    {
+        juce::PopupMenu lengthMenu;
+        for (double beats : { 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0 })
+            lengthMenu.addItem (juce::String (beats, 0) + (std::abs (beats - 1.0) < 1.0e-6 ? " beat" : " beats"), true, std::abs (slot.lengthBeats - beats) < 1.0e-6,
+                                [this, beats]
+                                {
+                                    auto progression = processor.getProgression();
+                                    if (index < (int) progression.slots.size())
+                                        progression.slots[(size_t) index].lengthBeats = beats;
+                                    processor.setProgression (progression);
+                                });
+
+        const auto count = (int) processor.getProgression().slots.size();
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader (juce::String::fromUTF8 (slot.name.c_str()));
+        menu.addSubMenu ("Length", lengthMenu);
+        menu.addItem ("Move left", index > 0, false, [this]
+        {
+            auto progression = processor.getProgression();
+            std::swap (progression.slots[(size_t) index], progression.slots[(size_t) index - 1]);
+            processor.setProgression (progression);
+        });
+        menu.addItem ("Move right", index < count - 1, false, [this]
+        {
+            auto progression = processor.getProgression();
+            std::swap (progression.slots[(size_t) index], progression.slots[(size_t) index + 1]);
+            processor.setProgression (progression);
+        });
+        menu.addItem ("Duplicate", count < madscaler::Progression::maxSlots, false, [this]
+        {
+            auto progression = processor.getProgression();
+            progression.slots.insert (progression.slots.begin() + index + 1, progression.slots[(size_t) index]);
+            processor.setProgression (progression);
+        });
+        menu.addSeparator();
+        menu.addItem ("Delete", [this]
+        {
+            auto progression = processor.getProgression();
+            progression.slots.erase (progression.slots.begin() + index);
+            processor.setProgression (progression);
+        });
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this));
+    }
+
+    ProgressionStrip::DragHandle::DragHandle (ProgressionStrip& o) : owner (o)
+    {
+        setText ("Drag MIDI", juce::dontSendNotification);
+        setJustificationType (juce::Justification::centred);
+        setColour (juce::Label::textColourId, Colours::text);
+        setColour (juce::Label::backgroundColourId, Colours::pad);
+        setColour (juce::Label::outlineColourId, Colours::accent.withAlpha (0.5f));
+        setFont (juce::FontOptions (13.0f));
+        setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+        setTooltip ("Drag the progression into your DAW as a MIDI clip");
+    }
+
+    void ProgressionStrip::DragHandle::mouseDrag (const juce::MouseEvent& e)
+    {
+        if (dragging || e.getDistanceFromDragStart() < 6 || owner.processor.getProgression().slots.empty())
+            return;
+
+        dragging = true;
+        const auto file = owner.writeMidiFile (juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                                   .getChildFile ("MadScaler Progression.mid"));
+        if (file.existsAsFile())
+            juce::DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, this,
+                                                                        [this] { dragging = false; });
+        else
+            dragging = false;
+    }
+
+    void ProgressionStrip::DragHandle::mouseUp (const juce::MouseEvent&)
+    {
+        dragging = false;
+    }
+
+    ProgressionStrip::ProgressionStrip (MadScalerProcessor& p) : processor (p)
+    {
+        titleLabel.setText ("Progression", juce::dontSendNotification);
+        titleLabel.setColour (juce::Label::textColourId, Colours::accent);
+        titleLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        addAndMakeVisible (titleLabel);
+
+        for (auto* button : { &addButton, &playButton, &clearButton, &exportButton })
+        {
+            button->setColour (juce::TextButton::buttonColourId, Colours::pad);
+            button->setColour (juce::TextButton::buttonOnColourId, Colours::padLit);
+            button->setColour (juce::TextButton::textColourOffId, Colours::text);
+            addAndMakeVisible (*button);
+        }
+
+        addButton.setClickingTogglesState (true);
+        addButton.setTooltip ("While on, every chord you press is added to the end of the progression");
+        playButton.setClickingTogglesState (true);
+        playButton.setTooltip ("Loop the progression, following the DAW's position while it plays");
+        playButton.onClick = [this] { processor.setProgressionPlaying (playButton.getToggleState()); };
+        clearButton.onClick = [this]
+        {
+            processor.setProgression ({});
+        };
+        exportButton.onClick = [this] { exportMidi(); };
+        addAndMakeVisible (dragHandle);
+
+        for (int i = 0; i < madscaler::Progression::maxSlots; ++i)
+        {
+            slots[(size_t) i] = std::make_unique<ProgressionSlotView> (processor, i);
+            addAndMakeVisible (*slots[(size_t) i]);
+        }
+
+        refresh();
+    }
+
+    void ProgressionStrip::addChord (const std::string& name, const std::vector<int>& notes)
+    {
+        auto progression = processor.getProgression();
+        if ((int) progression.slots.size() >= madscaler::Progression::maxSlots || notes.empty())
+            return;
+
+        progression.slots.push_back ({ name, notes, 4.0 });
+        processor.setProgression (progression);
+    }
+
+    std::vector<int> ProgressionStrip::lastChordNotes() const
+    {
+        const auto& progression = processor.getProgression();
+        return progression.slots.empty() ? std::vector<int>() : progression.slots.back().notes;
+    }
+
+    void ProgressionStrip::refresh()
+    {
+        const auto& progression = processor.getProgression();
+        for (size_t i = 0; i < slots.size(); ++i)
+            slots[i]->setSlot (i < progression.slots.size() ? &progression.slots[i] : nullptr,
+                               i == progression.slots.size());
+        lastSize = progression.slots.size();
+        resized();
+    }
+
+    void ProgressionStrip::update()
+    {
+        // The progression can change from slot menus or a host state load.
+        static_assert (madscaler::Progression::maxSlots > 0);
+        refresh();
+
+        const auto current = processor.getCurrentProgressionSlot();
+        for (int i = 0; i < (int) slots.size(); ++i)
+            slots[(size_t) i]->setCurrent (i == current);
+
+        if (playButton.getToggleState() != processor.isProgressionPlaying())
+            playButton.setToggleState (processor.isProgressionPlaying(), juce::dontSendNotification);
+    }
+
+    void ProgressionStrip::paint (juce::Graphics& g)
+    {
+        g.setColour (Colours::panel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+    }
+
+    void ProgressionStrip::resized()
+    {
+        auto area = getLocalBounds().reduced (10, 6);
+
+        auto top = area.removeFromTop (24);
+        titleLabel.setBounds (top.removeFromLeft (100));
+        dragHandle.setBounds (top.removeFromRight (90));
+        top.removeFromRight (6);
+        exportButton.setBounds (top.removeFromRight (100));
+        top.removeFromRight (6);
+        clearButton.setBounds (top.removeFromRight (60));
+        top.removeFromRight (6);
+        playButton.setBounds (top.removeFromRight (60));
+        top.removeFromRight (6);
+        addButton.setBounds (top.removeFromRight (100));
+
+        area.removeFromTop (6);
+
+        // Show at least 8 slots, and one empty slot after the last chord.
+        const auto visible = juce::jlimit (8, madscaler::Progression::maxSlots, (int) lastSize + 1);
+        const auto slotWidth = area.getWidth() / visible;
+        for (int i = 0; i < (int) slots.size(); ++i)
+        {
+            slots[(size_t) i]->setVisible (i < visible);
+            if (i < visible)
+                slots[(size_t) i]->setBounds (area.getX() + i * slotWidth, area.getY(), slotWidth, area.getHeight());
+        }
+    }
+
+    juce::File ProgressionStrip::writeMidiFile (const juce::File& file) const
+    {
+        const auto pattern = processor.getPatternSettings();
+        const auto velocity = (int) processor.parameters.getRawParameterValue ("velocity")->load();
+        const auto channel = (int) processor.parameters.getRawParameterValue ("channel")->load();
+        const auto bpm = processor.getLastBpm();
+
+        const auto notes = madscaler::renderProgression (processor.getProgression(), velocity,
+                                                         pattern ? &*pattern : nullptr, bpm);
+
+        constexpr int ticksPerBeat = 960;
+        juce::MidiMessageSequence sequence;
+        sequence.addEvent (juce::MidiMessage::tempoMetaEvent ((int) std::round (60000000.0 / bpm)), 0.0);
+        for (const auto& note : notes)
+        {
+            const auto start = std::round (note.startBeat * ticksPerBeat);
+            const auto end = std::round ((note.startBeat + note.lengthBeats) * ticksPerBeat);
+            sequence.addEvent (juce::MidiMessage::noteOn (channel, note.note, (juce::uint8) note.velocity), start);
+            sequence.addEvent (juce::MidiMessage::noteOff (channel, note.note), juce::jmax (start + 1.0, end));
+        }
+        sequence.updateMatchedPairs();
+
+        juce::MidiFile midiFile;
+        midiFile.setTicksPerQuarterNote (ticksPerBeat);
+        midiFile.addTrack (sequence);
+
+        file.deleteFile();
+        juce::FileOutputStream stream (file);
+        if (! stream.openedOk() || ! midiFile.writeTo (stream))
+            return {};
+        stream.flush();
+        return file;
+    }
+
+    void ProgressionStrip::exportMidi()
+    {
+        if (processor.getProgression().slots.empty())
+            return;
+
+        chooser = std::make_unique<juce::FileChooser> ("Export progression as MIDI",
+                                                       juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                                                           .getChildFile ("MadScaler Progression.mid"),
+                                                       "*.mid");
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this] (const juce::FileChooser& fc)
+                              {
+                                  const auto file = fc.getResult();
+                                  if (file != juce::File())
+                                      writeMidiFile (file.withFileExtension ("mid"));
+                              });
     }
 
     DetectionPanel::DetectionPanel (MadScalerProcessor& p) : processor (p)
@@ -385,7 +688,7 @@ namespace madscaler::ui
 } // namespace madscaler::ui
 
 MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), keyboard (p)
+    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), progressionStrip (p), keyboard (p)
 {
     auto& lf = getLookAndFeel();
     lf.setColour (juce::ComboBox::backgroundColourId, Colours::panel);
@@ -483,11 +786,35 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     }
 
     addAndMakeVisible (detectionPanel);
+    addAndMakeVisible (progressionStrip);
+
+    // With "Add chords" on, pressed chords also go into the progression.
+    for (auto& pad : pads)
+        pad->onPressed = [this] (int degree)
+        {
+            if (progressionStrip.isAddMode())
+            {
+                const auto chord = processor.getChordForDegree (degree, progressionStrip.lastChordNotes());
+                progressionStrip.addChord (chord.name, chord.notes);
+            }
+        };
+
+    for (auto& chip : detectionPanel.chips)
+        chip->onPressed = [this] (const madscaler::DetectedChord& chord)
+        {
+            if (progressionStrip.isAddMode())
+                progressionStrip.addChord (chord.name, chord.notes);
+        };
+
+    keysLockButton.setColour (juce::ToggleButton::textColourId, Colours::textDim);
+    keysLockButton.setTooltip ("Move every note you play to the nearest note of the scale");
+    addAndMakeVisible (keysLockButton);
+    keysLockAttachment = std::make_unique<ButtonAttachment> (processor.parameters, "keysLock", keysLockButton);
     addAndMakeVisible (keyboard);
 
     setResizable (true, true);
-    setResizeLimits (760, 640, 1600, 1200);
-    setSize (860, 700);
+    setResizeLimits (800, 740, 1600, 1300);
+    setSize (880, 800);
     startTimerHz (30);
 }
 
@@ -553,11 +880,14 @@ void MadScalerEditor::resized()
     place (strumLabel, strumSlider, 100);
 
     auto secondRow = area.removeFromTop (30);
-    scaleNotesLabel.setBounds (secondRow.removeFromLeft (secondRow.getWidth() / 2));
+    scaleNotesLabel.setBounds (secondRow.removeFromLeft (300));
+    keysLockButton.setBounds (secondRow.removeFromLeft (120));
     keyTriggerButton.setBounds (secondRow);
 
     area.removeFromTop (4);
     detectionPanel.setBounds (area.removeFromTop (96));
+    area.removeFromTop (8);
+    progressionStrip.setBounds (area.removeFromTop (84));
     area.removeFromTop (8);
     keyboard.setBounds (area.removeFromBottom (80));
     keyboard.setKeyWidth ((float) keyboard.getWidth() / 49.0f); // 49 white keys from C1 to B7
@@ -596,6 +926,7 @@ void MadScalerEditor::timerCallback()
     }
 
     detectionPanel.update();
+    progressionStrip.update();
 
     const auto mask = processor.getActiveDegreeMask();
     for (int i = 0; i < MadScalerProcessor::numDegrees; ++i)
