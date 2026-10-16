@@ -32,7 +32,7 @@ synth in REAPER, Ableton Live, FL Studio, Cubase and Bitwig.
 
 ## Building
 
-Requirements: CMake 3.22+, a C++17 compiler (Visual Studio 2022 on Windows).
+Requirements: CMake 3.22+, a C++17 compiler (Visual Studio 2022 or newer on Windows).
 JUCE 8 is downloaded automatically during configure.
 
 ```
