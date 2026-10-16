@@ -170,6 +170,25 @@ madscaler::ColourChord MadScalerProcessor::getCircleChord (int position, bool mi
     return chord;
 }
 
+madscaler::Progression MadScalerProcessor::buildFromLibrary (const madscaler::LibraryProgression& entry) const
+{
+    const auto key = getKey();
+    const auto octave = (int) octaveParam->load();
+
+    auto voicing = getVoicingSettings();
+    voicing.voiceLeading = true;
+
+    madscaler::Progression result;
+    std::vector<int> previous;
+    for (auto slot : madscaler::buildLibraryProgression (entry, key, 12 * (octave + 1) + key))
+    {
+        slot.notes = madscaler::voiceChord (slot.notes, voicing, previous);
+        previous = slot.notes;
+        result.slots.push_back (std::move (slot));
+    }
+    return result;
+}
+
 void MadScalerProcessor::pushUiEvent (const UiEvent& event)
 {
     const auto scope = uiFifo.write (1);

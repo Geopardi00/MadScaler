@@ -295,6 +295,29 @@ int main()
     restored.setStateInformation (state.getData(), (int) state.getSize());
     expect (restored.getScaleIndex() == 1, "state restores the scale");
 
+    // Library progressions load in the current key, voice-led.
+    {
+        setParam (processor, "key", 7.0f); // G
+        setParam (processor, "inversion", 0.0f);
+        const madscaler::LibraryProgression* anthem = nullptr;
+        for (const auto& entry : madscaler::getLibrary())
+            if (std::string (entry.name) == "Four chord anthem")
+                anthem = &entry;
+
+        expect (anthem != nullptr, "library has the four chord anthem");
+        if (anthem != nullptr)
+        {
+            const auto loaded = processor.buildFromLibrary (*anthem);
+            expect (loaded.slots.size() == 4 && loaded.slots[0].name == "G" && loaded.slots[3].name == "C",
+                    "anthem loads in G");
+            if (loaded.slots.size() == 4)
+                expect (madscaler::voiceLeadingDistance (loaded.slots[0].notes, loaded.slots[1].notes)
+                            < madscaler::voiceLeadingDistance (loaded.slots[0].notes, { 74, 78, 81 }),
+                        "library chords are voice-led (closer than root-position D)");
+        }
+        setParam (processor, "key", 0.0f);
+    }
+
     if (failures == 0)
         std::cout << "All processor tests passed\n";
 

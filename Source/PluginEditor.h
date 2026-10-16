@@ -184,16 +184,25 @@ namespace madscaler::ui
 
         void setSlot (const madscaler::ProgressionSlot* slot, bool isNextEmpty);
         void setCurrent (bool isCurrent);
+        void setSelected (bool isSelected);
 
         void paint (juce::Graphics&) override;
         void mouseDown (const juce::MouseEvent&) override;
+        void mouseUp (const juce::MouseEvent&) override;
+
+        // Called on a left click, to select the slot for replacing.
+        std::function<void (int index)> onClicked;
+        // Called from the menu's "Replace with" items.
+        std::function<void (int index, const madscaler::Chord&)> onReplace;
 
     private:
         void showMenu();
 
+        static constexpr int auditionId = 300; // colour chord ids used to preview slots
+
         MadScalerProcessor& processor;
         const int index;
-        bool hasSlot = false, nextEmpty = false, current = false;
+        bool hasSlot = false, nextEmpty = false, current = false, selected = false, auditioning = false;
         madscaler::ProgressionSlot slot;
     };
 
@@ -204,10 +213,16 @@ namespace madscaler::ui
         explicit ProgressionStrip (MadScalerProcessor& processor);
 
         bool isAddMode() const { return addButton.getToggleState(); }
-        void addChord (const std::string& name, const std::vector<int>& notes);
 
-        // Notes of the last chord in the progression, for voice leading new ones.
-        std::vector<int> lastChordNotes() const;
+        // A chord was pressed somewhere (pad, colour, circle, detected chip):
+        // it replaces the selected slot, or with "Add chords" on goes at the end.
+        void chordPressed (const std::string& name, const std::vector<int>& notes);
+        bool wantsChords() const { return isAddMode() || selected >= 0; }
+
+        void loadProgression (const madscaler::Progression& progression, bool append);
+
+        // The chord a new or replaced chord follows, for voice leading.
+        std::vector<int> contextNotes() const;
 
         // Called regularly from the editor's timer.
         void update();
@@ -231,9 +246,11 @@ namespace madscaler::ui
 
         juce::File writeMidiFile (const juce::File& file) const;
         void exportMidi();
+        void select (int index);
 
         MadScalerProcessor& processor;
-        juce::Label titleLabel;
+        int selected = -1;
+        juce::Label titleLabel, hintLabel;
         juce::TextButton addButton { "Add chords" }, playButton { "Play" }, clearButton { "Clear" },
                          exportButton { "Export MIDI" };
         DragHandle dragHandle { *this };
@@ -241,6 +258,66 @@ namespace madscaler::ui
         std::unique_ptr<juce::FileChooser> chooser;
         size_t lastSize = 0;
         int lastCurrent = -2;
+    };
+
+    // Browses MadScaler's progression library by style, mood and use, and loads
+    // a progression into the strip in the current key.
+    class LibraryPanel : public juce::Component
+    {
+    public:
+        LibraryPanel (MadScalerProcessor& processor, ProgressionStrip& strip);
+
+        void refresh(); // key or voicing changed
+
+        void paint (juce::Graphics&) override;
+        void resized() override;
+
+    private:
+        struct TagRow
+        {
+            juce::String text;
+            bool header = false;
+        };
+
+        class TagModel : public juce::ListBoxModel
+        {
+        public:
+            explicit TagModel (LibraryPanel& o) : owner (o) {}
+            int getNumRows() override { return (int) owner.tagRows.size(); }
+            void paintListBoxItem (int row, juce::Graphics&, int width, int height, bool selected) override;
+            void selectedRowsChanged (int lastRowSelected) override;
+
+        private:
+            LibraryPanel& owner;
+        };
+
+        class ProgressionModel : public juce::ListBoxModel
+        {
+        public:
+            explicit ProgressionModel (LibraryPanel& o) : owner (o) {}
+            int getNumRows() override { return (int) owner.matches.size(); }
+            void paintListBoxItem (int row, juce::Graphics&, int width, int height, bool selected) override;
+            void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override;
+            void selectedRowsChanged (int lastRowSelected) override;
+
+        private:
+            LibraryPanel& owner;
+        };
+
+        void showTag (const juce::String& tag);
+        void load (bool append);
+        const madscaler::LibraryProgression* selectedProgression() const;
+        juce::String chordNamesInKey (const madscaler::LibraryProgression& progression) const;
+
+        MadScalerProcessor& processor;
+        ProgressionStrip& strip;
+        std::vector<TagRow> tagRows;
+        std::vector<const madscaler::LibraryProgression*> matches;
+        TagModel tagModel { *this };
+        ProgressionModel progressionModel { *this };
+        juce::ListBox tagList, progressionList;
+        juce::Label detailLabel;
+        juce::TextButton loadButton { "Load" }, appendButton { "Append" };
     };
 
     // Names the chord coming in on MIDI, keeps a history of the chords played and
@@ -291,7 +368,7 @@ public:
 private:
     void timerCallback() override;
     void refreshChords();
-    void showTab (bool colours);
+    void showTab (int tab);
 
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -320,9 +397,10 @@ private:
     std::array<std::unique_ptr<madscaler::ui::ChordPad>, MadScalerProcessor::numDegrees> pads;
     madscaler::ui::DetectionPanel detectionPanel;
     madscaler::ui::ColoursPanel coloursPanel;
-    juce::TextButton coloursTab { "Colours" }, detectTab { "Detect" };
+    juce::TextButton coloursTab { "Colours" }, libraryTab { "Library" }, detectTab { "Detect" };
     int lastSuggestedDegree = -2;
     madscaler::ui::ProgressionStrip progressionStrip;
+    madscaler::ui::LibraryPanel libraryPanel;
     madscaler::ui::ScaleKeyboard keyboard;
 
     std::array<float, 7> lastChordSettings { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };

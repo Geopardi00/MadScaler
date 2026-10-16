@@ -582,6 +582,15 @@ namespace madscaler::ui
         }
     }
 
+    void ProgressionSlotView::setSelected (bool isSelected)
+    {
+        if (selected != isSelected)
+        {
+            selected = isSelected;
+            repaint();
+        }
+    }
+
     void ProgressionSlotView::paint (juce::Graphics& g)
     {
         auto area = getLocalBounds().toFloat().reduced (2.0f);
@@ -602,6 +611,12 @@ namespace madscaler::ui
         g.setColour (current ? Colours::padLit : Colours::pad);
         g.fillRoundedRectangle (area, 6.0f);
 
+        if (selected)
+        {
+            g.setColour (Colours::accent);
+            g.drawRoundedRectangle (area.reduced (1.0f), 6.0f, 2.0f);
+        }
+
         auto text = area.reduced (4.0f, 2.0f);
         g.setColour (Colours::text);
         g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -613,10 +628,31 @@ namespace madscaler::ui
         g.drawFittedText (beats + (std::abs (slot.lengthBeats - 1.0) < 1.0e-6 ? " beat" : " beats"), text.toNearestInt(), juce::Justification::centred, 1);
     }
 
-    void ProgressionSlotView::mouseDown (const juce::MouseEvent&)
+    void ProgressionSlotView::mouseDown (const juce::MouseEvent& e)
     {
-        if (hasSlot)
+        if (! hasSlot)
+            return;
+
+        if (e.mods.isPopupMenu())
+        {
             showMenu();
+            return;
+        }
+
+        // Left click: hear the chord and select the slot for replacing.
+        auditioning = true;
+        processor.setColourChordPressed (auditionId + index, slot.notes, true);
+        if (onClicked)
+            onClicked (index);
+    }
+
+    void ProgressionSlotView::mouseUp (const juce::MouseEvent&)
+    {
+        if (auditioning)
+        {
+            auditioning = false;
+            processor.setColourChordPressed (auditionId + index, {}, false);
+        }
     }
 
     void ProgressionSlotView::showMenu()
@@ -634,8 +670,21 @@ namespace madscaler::ui
 
         const auto count = (int) processor.getProgression().slots.size();
 
+        // The scale's chords, voice-led from the chord before this one.
+        juce::PopupMenu replaceMenu;
+        const auto& slots = processor.getProgression().slots;
+        const auto previous = index > 0 && index - 1 < (int) slots.size() ? slots[(size_t) index - 1].notes : std::vector<int>();
+        for (int degree = 0; degree < MadScalerProcessor::numDegrees; ++degree)
+        {
+            const auto chord = processor.getChordForDegree (degree, previous);
+            replaceMenu.addItem (juce::String::fromUTF8 (chord.roman.c_str()) + "   " + juce::String::fromUTF8 (chord.name.c_str()),
+                                 [this, chord] { if (onReplace) onReplace (index, chord); });
+        }
+
         juce::PopupMenu menu;
         menu.addSectionHeader (juce::String::fromUTF8 (slot.name.c_str()));
+        menu.addSubMenu ("Replace with", replaceMenu);
+        menu.addItem ("Pick a new chord...", [this] { if (onClicked) onClicked (index); });
         menu.addSubMenu ("Length", lengthMenu);
         menu.addItem ("Move left", index > 0, false, [this]
         {
@@ -705,6 +754,10 @@ namespace madscaler::ui
         titleLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         addAndMakeVisible (titleLabel);
 
+        hintLabel.setColour (juce::Label::textColourId, Colours::textDim);
+        hintLabel.setFont (juce::FontOptions (11.5f));
+        addAndMakeVisible (hintLabel);
+
         for (auto* button : { &addButton, &playButton, &clearButton, &exportButton })
         {
             button->setColour (juce::TextButton::buttonColourId, Colours::pad);
@@ -720,6 +773,7 @@ namespace madscaler::ui
         playButton.onClick = [this] { processor.setProgressionPlaying (playButton.getToggleState()); };
         clearButton.onClick = [this]
         {
+            select (-1);
             processor.setProgression ({});
         };
         exportButton.onClick = [this] { exportMidi(); };
@@ -728,26 +782,79 @@ namespace madscaler::ui
         for (int i = 0; i < madscaler::Progression::maxSlots; ++i)
         {
             slots[(size_t) i] = std::make_unique<ProgressionSlotView> (processor, i);
+            slots[(size_t) i]->onClicked = [this] (int index) { select (selected == index ? -1 : index); };
+            slots[(size_t) i]->onReplace = [this] (int index, const madscaler::Chord& chord)
+            {
+                auto progression = processor.getProgression();
+                if (index < (int) progression.slots.size())
+                {
+                    progression.slots[(size_t) index].name = chord.name;
+                    progression.slots[(size_t) index].notes = chord.notes;
+                    processor.setProgression (progression);
+                }
+            };
             addAndMakeVisible (*slots[(size_t) i]);
         }
 
         refresh();
     }
 
-    void ProgressionStrip::addChord (const std::string& name, const std::vector<int>& notes)
+    void ProgressionStrip::chordPressed (const std::string& name, const std::vector<int>& notes)
     {
         auto progression = processor.getProgression();
-        if ((int) progression.slots.size() >= madscaler::Progression::maxSlots || notes.empty())
+        if (notes.empty())
             return;
 
-        progression.slots.push_back ({ name, notes, 4.0 });
+        if (selected >= 0 && selected < (int) progression.slots.size())
+        {
+            // Replace the selected chord and keep its length. The slot stays
+            // selected so other chords can be tried in its place.
+            progression.slots[(size_t) selected].name = name;
+            progression.slots[(size_t) selected].notes = notes;
+        }
+        else if (isAddMode() && (int) progression.slots.size() < madscaler::Progression::maxSlots)
+        {
+            progression.slots.push_back ({ name, notes, 4.0 });
+        }
+        else
+        {
+            return;
+        }
+
         processor.setProgression (progression);
     }
 
-    std::vector<int> ProgressionStrip::lastChordNotes() const
+    void ProgressionStrip::loadProgression (const madscaler::Progression& loaded, bool append)
+    {
+        auto progression = append ? processor.getProgression() : madscaler::Progression();
+        for (const auto& slot : loaded.slots)
+            if ((int) progression.slots.size() < madscaler::Progression::maxSlots)
+                progression.slots.push_back (slot);
+
+        select (-1);
+        processor.setProgression (progression);
+    }
+
+    std::vector<int> ProgressionStrip::contextNotes() const
     {
         const auto& progression = processor.getProgression();
+        if (selected > 0 && selected <= (int) progression.slots.size())
+            return progression.slots[(size_t) selected - 1].notes;
+        if (selected == 0)
+            return {};
         return progression.slots.empty() ? std::vector<int>() : progression.slots.back().notes;
+    }
+
+    void ProgressionStrip::select (int index)
+    {
+        selected = index;
+        for (int i = 0; i < (int) slots.size(); ++i)
+            slots[(size_t) i]->setSelected (i == selected);
+
+        hintLabel.setColour (juce::Label::textColourId, selected >= 0 ? Colours::accent : Colours::textDim);
+        hintLabel.setText (selected >= 0 ? "Now press any chord to replace it"
+                                         : "Click a chord to replace it, right-click for more",
+                           juce::dontSendNotification);
     }
 
     void ProgressionStrip::refresh()
@@ -757,6 +864,10 @@ namespace madscaler::ui
             slots[i]->setSlot (i < progression.slots.size() ? &progression.slots[i] : nullptr,
                                i == progression.slots.size());
         lastSize = progression.slots.size();
+        if (selected >= (int) lastSize)
+            select (-1);
+        else if (hintLabel.getText().isEmpty())
+            select (selected);
         resized();
     }
 
@@ -785,7 +896,7 @@ namespace madscaler::ui
         auto area = getLocalBounds().reduced (10, 6);
 
         auto top = area.removeFromTop (24);
-        titleLabel.setBounds (top.removeFromLeft (100));
+        titleLabel.setBounds (top.removeFromLeft (90));
         dragHandle.setBounds (top.removeFromRight (90));
         top.removeFromRight (6);
         exportButton.setBounds (top.removeFromRight (100));
@@ -795,6 +906,8 @@ namespace madscaler::ui
         playButton.setBounds (top.removeFromRight (60));
         top.removeFromRight (6);
         addButton.setBounds (top.removeFromRight (100));
+        top.removeFromRight (6);
+        hintLabel.setBounds (top);
 
         area.removeFromTop (6);
 
@@ -859,6 +972,208 @@ namespace madscaler::ui
                                   if (file != juce::File())
                                       writeMidiFile (file.withFileExtension ("mid"));
                               });
+    }
+
+    LibraryPanel::LibraryPanel (MadScalerProcessor& p, ProgressionStrip& s) : processor (p), strip (s)
+    {
+        tagRows.push_back ({ "All", false });
+        for (const auto& group : madscaler::getLibraryTagGroups())
+        {
+            tagRows.push_back ({ group.title, true });
+            for (const auto* tag : group.tags)
+                tagRows.push_back ({ tag, false });
+        }
+
+        for (auto* list : { &tagList, &progressionList })
+        {
+            list->setColour (juce::ListBox::backgroundColourId, Colours::background);
+            list->setColour (juce::ListBox::outlineColourId, Colours::pad);
+            list->setOutlineThickness (1);
+            addAndMakeVisible (*list);
+        }
+
+        tagList.setModel (&tagModel);
+        tagList.setRowHeight (20);
+        progressionList.setModel (&progressionModel);
+        progressionList.setRowHeight (38);
+
+        detailLabel.setColour (juce::Label::textColourId, Colours::textDim);
+        detailLabel.setFont (juce::FontOptions (11.5f));
+        detailLabel.setJustificationType (juce::Justification::topLeft);
+        addAndMakeVisible (detailLabel);
+
+        for (auto* button : { &loadButton, &appendButton })
+        {
+            button->setColour (juce::TextButton::buttonColourId, Colours::pad);
+            button->setColour (juce::TextButton::textColourOffId, Colours::text);
+            addAndMakeVisible (*button);
+        }
+        loadButton.setTooltip ("Replace the progression with this one, in the current key");
+        appendButton.setTooltip ("Add this progression after the current one");
+        loadButton.onClick = [this] { load (false); };
+        appendButton.onClick = [this] { load (true); };
+
+        tagList.selectRow (0);
+    }
+
+    void LibraryPanel::TagModel::paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool isSelected)
+    {
+        if (row < 0 || row >= (int) owner.tagRows.size())
+            return;
+
+        const auto& tagRow = owner.tagRows[(size_t) row];
+        if (tagRow.header)
+        {
+            g.setColour (Colours::accent);
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText (tagRow.text.toUpperCase(), 6, 0, width - 8, height, juce::Justification::centredLeft);
+            return;
+        }
+
+        if (isSelected)
+        {
+            g.setColour (Colours::padLit);
+            g.fillRect (0, 0, width, height);
+        }
+
+        g.setColour (Colours::text);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText (tagRow.text, 14, 0, width - 16, height, juce::Justification::centredLeft);
+    }
+
+    void LibraryPanel::TagModel::selectedRowsChanged (int row)
+    {
+        if (row < 0 || row >= (int) owner.tagRows.size())
+            return;
+
+        if (owner.tagRows[(size_t) row].header)
+        {
+            // Headers are not selectable: move to the first tag under it.
+            owner.tagList.selectRow (row + 1);
+            return;
+        }
+
+        owner.showTag (owner.tagRows[(size_t) row].text);
+    }
+
+    void LibraryPanel::ProgressionModel::paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool isSelected)
+    {
+        if (row < 0 || row >= (int) owner.matches.size())
+            return;
+
+        const auto& progression = *owner.matches[(size_t) row];
+        g.setColour (isSelected ? Colours::padLit : (row % 2 == 0 ? Colours::panel : Colours::background));
+        g.fillRect (0, 0, width, height);
+
+        g.setColour (Colours::text);
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.drawText (juce::String::fromUTF8 (progression.name), 8, 3, width - 16, height / 2 - 2, juce::Justification::centredLeft);
+
+        g.setColour (isSelected ? Colours::text : Colours::textDim);
+        g.setFont (juce::FontOptions (11.5f));
+        g.drawText (owner.chordNamesInKey (progression), 8, height / 2 + 1, width - 16, height / 2 - 4,
+                    juce::Justification::centredLeft);
+    }
+
+    void LibraryPanel::ProgressionModel::listBoxItemDoubleClicked (int, const juce::MouseEvent&)
+    {
+        owner.load (false);
+    }
+
+    void LibraryPanel::ProgressionModel::selectedRowsChanged (int)
+    {
+        const auto* progression = owner.selectedProgression();
+        owner.loadButton.setEnabled (progression != nullptr);
+        owner.appendButton.setEnabled (progression != nullptr);
+
+        if (progression == nullptr)
+        {
+            owner.detailLabel.setText ("Pick a progression. Double-click loads it.", juce::dontSendNotification);
+            return;
+        }
+
+        juce::StringArray tags;
+        for (const auto& tag : madscaler::getTags (*progression))
+            tags.add (tag);
+
+        const auto scaleName = juce::String (madscaler::getScales()[(size_t) progression->scaleIndex].name);
+        owner.detailLabel.setText (juce::String (madscaler::getChordTokens (*progression).size()) + " chords, "
+                                       + scaleName + "\n" + tags.joinIntoString (", "),
+                                   juce::dontSendNotification);
+    }
+
+    void LibraryPanel::showTag (const juce::String& tag)
+    {
+        matches.clear();
+        for (const auto& progression : madscaler::getLibrary())
+            if (tag == "All" || madscaler::hasTag (progression, tag.toStdString()))
+                matches.push_back (&progression);
+
+        progressionList.updateContent();
+        progressionList.deselectAllRows();
+        progressionList.scrollToEnsureRowIsOnscreen (0);
+        progressionList.repaint();
+        progressionModel.selectedRowsChanged (-1);
+    }
+
+    const madscaler::LibraryProgression* LibraryPanel::selectedProgression() const
+    {
+        const auto row = progressionList.getSelectedRow();
+        return row >= 0 && row < (int) matches.size() ? matches[(size_t) row] : nullptr;
+    }
+
+    juce::String LibraryPanel::chordNamesInKey (const madscaler::LibraryProgression& progression) const
+    {
+        juce::StringArray names;
+        for (const auto& slot : madscaler::buildLibraryProgression (progression, processor.getKey(), 60))
+            names.add (juce::String::fromUTF8 (slot.name.c_str()));
+        return names.joinIntoString ("  ");
+    }
+
+    void LibraryPanel::load (bool append)
+    {
+        const auto* progression = selectedProgression();
+        if (progression == nullptr)
+            return;
+
+        // Switch the pads to the progression's scale, so they offer fitting
+        // chords for editing it.
+        if (auto* param = processor.parameters.getParameter ("scale"))
+        {
+            param->beginChangeGesture();
+            param->setValueNotifyingHost (param->convertTo0to1 ((float) progression->scaleIndex));
+            param->endChangeGesture();
+        }
+
+        strip.loadProgression (processor.buildFromLibrary (*progression), append);
+    }
+
+    void LibraryPanel::refresh()
+    {
+        progressionList.repaint();
+    }
+
+    void LibraryPanel::paint (juce::Graphics& g)
+    {
+        g.setColour (Colours::panel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+    }
+
+    void LibraryPanel::resized()
+    {
+        auto area = getLocalBounds().reduced (10, 8);
+        tagList.setBounds (area.removeFromLeft (170));
+        area.removeFromLeft (8);
+
+        auto right = area.removeFromRight (190);
+        area.removeFromRight (8);
+        progressionList.setBounds (area);
+
+        auto buttons = right.removeFromBottom (28);
+        loadButton.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2).reduced (2, 0));
+        appendButton.setBounds (buttons.reduced (2, 0));
+        right.removeFromBottom (4);
+        detailLabel.setBounds (right);
     }
 
     DetectionPanel::DetectionPanel (MadScalerProcessor& p) : processor (p)
@@ -1035,7 +1350,7 @@ namespace madscaler::ui
 } // namespace madscaler::ui
 
 MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), coloursPanel (p), progressionStrip (p), keyboard (p)
+    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), coloursPanel (p), progressionStrip (p), libraryPanel (p, progressionStrip), keyboard (p)
 {
     auto& lf = getLookAndFeel();
     lf.setColour (juce::ComboBox::backgroundColourId, Colours::panel);
@@ -1134,9 +1449,10 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
 
     addChildComponent (detectionPanel);
     addAndMakeVisible (coloursPanel);
+    addChildComponent (libraryPanel);
     addAndMakeVisible (progressionStrip);
 
-    for (auto* tab : { &coloursTab, &detectTab })
+    for (auto* tab : { &coloursTab, &libraryTab, &detectTab })
     {
         tab->setClickingTogglesState (true);
         tab->setRadioGroupId (1);
@@ -1147,14 +1463,14 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
         tab->setConnectedEdges (juce::Button::ConnectedOnBottom);
         addAndMakeVisible (*tab);
     }
-    coloursTab.onClick = [this] { showTab (true); };
-    detectTab.onClick = [this] { showTab (false); };
+    coloursTab.onClick = [this] { showTab (0); };
+    libraryTab.onClick = [this] { showTab (1); };
+    detectTab.onClick = [this] { showTab (2); };
     coloursTab.setToggleState (true, juce::dontSendNotification);
 
     coloursPanel.onChordPressed = [this] (const std::string& name, const std::vector<int>& notes)
     {
-        if (progressionStrip.isAddMode())
-            progressionStrip.addChord (name, notes);
+        progressionStrip.chordPressed (name, notes);
     };
 
     // With "Add chords" on, pressed chords also go into the progression.
@@ -1162,18 +1478,17 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
         pad->onPressed = [this] (int degree)
         {
             coloursPanel.setDegree (degree);
-            if (progressionStrip.isAddMode())
+            if (progressionStrip.wantsChords())
             {
-                const auto chord = processor.getChordForDegree (degree, progressionStrip.lastChordNotes());
-                progressionStrip.addChord (chord.name, chord.notes);
+                const auto chord = processor.getChordForDegree (degree, progressionStrip.contextNotes());
+                progressionStrip.chordPressed (chord.name, chord.notes);
             }
         };
 
     for (auto& chip : detectionPanel.chips)
         chip->onPressed = [this] (const madscaler::DetectedChord& chord)
         {
-            if (progressionStrip.isAddMode())
-                progressionStrip.addChord (chord.name, chord.notes);
+            progressionStrip.chordPressed (chord.name, chord.notes);
         };
 
     keysLockButton.setColour (juce::ToggleButton::textColourId, Colours::textDim);
@@ -1257,9 +1572,11 @@ void MadScalerEditor::resized()
     area.removeFromTop (4);
     auto tabs = area.removeFromTop (24);
     coloursTab.setBounds (tabs.removeFromLeft (90));
+    libraryTab.setBounds (tabs.removeFromLeft (90));
     detectTab.setBounds (tabs.removeFromLeft (90));
     const auto panelArea = area.removeFromTop (150);
     coloursPanel.setBounds (panelArea);
+    libraryPanel.setBounds (panelArea);
     detectionPanel.setBounds (panelArea);
     area.removeFromTop (8);
     progressionStrip.setBounds (area.removeFromTop (84));
@@ -1285,13 +1602,15 @@ void MadScalerEditor::refreshChords()
     scaleNotesLabel.setText ("Scale notes: " + names.joinIntoString ("  "), juce::dontSendNotification);
     keyboard.repaint();
     coloursPanel.refresh();
+    libraryPanel.refresh();
     lastSuggestedDegree = -2; // the scale may have changed between major and minor
 }
 
-void MadScalerEditor::showTab (bool colours)
+void MadScalerEditor::showTab (int tab)
 {
-    coloursPanel.setVisible (colours);
-    detectionPanel.setVisible (! colours);
+    coloursPanel.setVisible (tab == 0);
+    libraryPanel.setVisible (tab == 1);
+    detectionPanel.setVisible (tab == 2);
 }
 
 void MadScalerEditor::timerCallback()

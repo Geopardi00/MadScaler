@@ -2,6 +2,7 @@
 
 #include "ChordColours.h"
 #include "ChordDetector.h"
+#include "ChordLibrary.h"
 #include "ChordEngine.h"
 #include "PatternEngine.h"
 #include "Progression.h"
@@ -77,6 +78,10 @@ public:
 
     // A Circle of Fifths triad in the current octave, voiced like the pads.
     madscaler::ColourChord getCircleChord (int position, bool minor, const std::vector<int>& previousNotes = {}) const;
+
+    // A library progression in the current key and octave, voiced with the
+    // current voicing and always voice-led so the chords flow smoothly.
+    madscaler::Progression buildFromLibrary (const madscaler::LibraryProgression& entry) const;
 
     // MIDI notes currently held on MadScaler's input (keyboard, DAW track or
     // on-screen keys), excluding keys used to trigger chords. Safe to call from any thread.
