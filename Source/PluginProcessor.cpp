@@ -252,6 +252,15 @@ void MadScalerProcessor::setColourChordPressed (int id, const std::vector<int>& 
     pushUiEvent (event);
 }
 
+void MadScalerProcessor::setMelodyNotePressed (int midiNote, bool pressed)
+{
+    UiEvent event;
+    event.kind = UiEvent::Kind::melodyNote;
+    event.index = juce::jlimit (0, 127, midiNote);
+    event.pressed = pressed;
+    pushUiEvent (event);
+}
+
 void MadScalerProcessor::setHeldInputNote (int midiNote, bool held)
 {
     if (! juce::isPositiveAndBelow (midiNote, 128))
@@ -853,6 +862,15 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                             colourHeldId = -1;
                         }
                         syncPattern (0);
+                        break;
+                    }
+
+                    case UiEvent::Kind::melodyNote:
+                    {
+                        const auto melodyChannel = juce::jlimit (1, 16, (int) melodyChannelParam->load());
+                        out.addEvent (event.pressed ? juce::MidiMessage::noteOn (melodyChannel, event.index, velocity)
+                                                    : juce::MidiMessage::noteOff (melodyChannel, event.index),
+                                      0);
                         break;
                     }
 

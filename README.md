@@ -74,6 +74,11 @@ code, presets or assets from, any commercial chord plugin.
   sextuplets, shuffle, tresillo, clave, gallop, groups of 3 and more), with
   staccato, normal or legato notes, swing, and accents on the beat, every
   third note or rising through each chord.
+  "Edit notes" opens a piano roll to change single notes: drag to move,
+  drag the right edge to stretch, double-click to add or delete, right-click
+  for octave, duplicate and loudness, and draw velocities in the lane
+  below. Snap to a grid (1/4 to 1/32, triplets or off), keep notes on the
+  scale, and undo or redo (Ctrl+Z, Ctrl+Y). Arrow keys move selected notes.
   "New melody" invents another one. With "Play along" on, the melody plays
   with the progression on its own MIDI channel (2 by default), so it can go
   to a different synth. "Drag melody" or "Export" saves it as MIDI.

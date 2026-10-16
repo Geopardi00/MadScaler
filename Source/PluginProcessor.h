@@ -104,6 +104,9 @@ public:
     void setMelodyPlaying (bool shouldPlay) { melodyPlaying.store (shouldPlay); }
     bool isMelodyPlaying() const { return melodyPlaying.load(); }
 
+    // Plays one note on the melody channel, to hear a note while editing it.
+    void setMelodyNotePressed (int midiNote, bool pressed);
+
     // MIDI notes currently held on MadScaler's input (keyboard, DAW track or
     // on-screen keys), excluding keys used to trigger chords. Safe to call from any thread.
     std::vector<int> getHeldInputNotes() const;
@@ -199,7 +202,7 @@ private:
     // through a lock-free single-producer single-consumer queue.
     struct UiEvent
     {
-        enum class Kind { pad, keyboardNote, detectedChord, colourChord };
+        enum class Kind { pad, keyboardNote, detectedChord, colourChord, melodyNote };
 
         Kind kind = Kind::pad;
         int index = 0; // degree, MIDI note, detected chord slot or colour chord id

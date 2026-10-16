@@ -5,6 +5,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <set>
 
 namespace madscaler::ui
 {
@@ -386,6 +387,9 @@ namespace madscaler::ui
         // Takes the chords of the current progression.
         void takeChords();
 
+        // Called by the "Edit notes" button.
+        std::function<void()> onEditNotes;
+
         // Called regularly from the editor's timer.
         void update();
 
@@ -423,12 +427,84 @@ namespace madscaler::ui
         juce::Slider channelSlider;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> channelAttachment;
         juce::TextButton getChordsButton { "Get chords" }, newButton { "New melody" }, playButton { "Play along" },
-                         exportButton { "Export" };
+                         exportButton { "Export" }, editButton { "Edit notes" };
         MidiDragHandle dragHandle { "Drag melody", "MadScaler Melody.mid", "Drag the melody into your DAW as a MIDI clip" };
         MelodyRoll roll;
         std::unique_ptr<juce::FileChooser> chooser;
         int lastVersion = -1;
         bool loading = false;
+    };
+
+    // A piano roll for changing the melody's notes one by one: drag to move,
+    // drag the right edge to stretch, double-click to add or delete, and set
+    // each note's velocity in the lane underneath.
+    class NoteEditor : public juce::Component
+    {
+    public:
+        explicit NoteEditor (MadScalerProcessor& processor);
+        ~NoteEditor() override;
+
+        // Called regularly from the editor's timer.
+        void update();
+
+        std::function<void()> onDone;
+
+        void paint (juce::Graphics&) override;
+        void resized() override;
+        void mouseDown (const juce::MouseEvent&) override;
+        void mouseDrag (const juce::MouseEvent&) override;
+        void mouseUp (const juce::MouseEvent&) override;
+        void mouseDoubleClick (const juce::MouseEvent&) override;
+        void mouseMove (const juce::MouseEvent&) override;
+        bool keyPressed (const juce::KeyPress&) override;
+        void visibilityChanged() override;
+
+    private:
+        enum class DragMode { none, move, resize, velocity };
+
+        juce::Rectangle<int> gridArea() const;
+        juce::Rectangle<int> velocityArea() const;
+        double gridStep() const;
+        double snapBeat (double beat) const;
+        double xToBeat (float x) const;
+        float beatToX (double beat) const;
+        int yToNote (float y) const;
+        float noteToY (int note) const;
+        juce::Rectangle<float> noteBounds (const madscaler::TimedNote& note) const;
+        int noteAt (juce::Point<float> position) const;
+        static bool isOnEdge (juce::Rectangle<float> noteBounds, float x);
+        int snapPitch (int note, int direction) const;
+        bool inScale (int note) const;
+        void updateRange();
+
+        void pushUndo();
+        void commit();            // sends the edited notes to the processor
+        void undo();
+        void redo();
+        void deleteSelected();
+        void transposeSelected (int semitones);
+        void showNoteMenu (int index);
+        void audition (int note);
+        void stopAudition();
+
+        MadScalerProcessor& processor;
+        juce::Label titleLabel, hintLabel;
+        juce::ComboBox snapBox;
+        juce::ToggleButton scaleButton { "Scale notes only" };
+        juce::TextButton undoButton { "Undo" }, redoButton { "Redo" }, doneButton { "Done" };
+
+        std::vector<madscaler::TimedNote> notes;
+        std::vector<std::vector<madscaler::TimedNote>> undoStack, redoStack;
+        std::set<int> selected;
+        int lowNote = 48, highNote = 84;
+        int lastVersion = -1;
+
+        DragMode dragMode = DragMode::none;
+        std::vector<madscaler::TimedNote> dragStartNotes;
+        int dragNote = -1;
+        bool dragChanged = false;
+        int auditionNote = -1;
+        static constexpr int auditionId = 400;
     };
 } // namespace madscaler::ui
 
@@ -479,6 +555,7 @@ private:
     madscaler::ui::ProgressionStrip progressionStrip;
     madscaler::ui::LibraryPanel libraryPanel;
     madscaler::ui::MelodyPanel melodyPanel;
+    madscaler::ui::NoteEditor noteEditor;
     madscaler::ui::ScaleKeyboard keyboard;
 
     std::array<float, 7> lastChordSettings { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };

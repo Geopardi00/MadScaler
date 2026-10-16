@@ -1501,7 +1501,7 @@ namespace madscaler::ui
         channelAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.parameters, "melodyChannel",
                                                                                                     channelSlider);
 
-        for (auto* button : { &getChordsButton, &newButton, &playButton, &exportButton })
+        for (auto* button : { &getChordsButton, &newButton, &playButton, &exportButton, &editButton })
         {
             button->setColour (juce::TextButton::buttonColourId, Colours::pad);
             button->setColour (juce::TextButton::buttonOnColourId, Colours::padLit);
@@ -1517,6 +1517,12 @@ namespace madscaler::ui
         playButton.setTooltip ("Play the melody along with the progression when it plays");
         playButton.onClick = [this] { processor.setMelodyPlaying (playButton.getToggleState()); };
         exportButton.onClick = [this] { exportMidi(); };
+        editButton.setTooltip ("Open a large piano roll to change the notes one by one");
+        editButton.onClick = [this]
+        {
+            if (onEditNotes)
+                onEditNotes();
+        };
 
         dragHandle.writeFile = [this] (const juce::File& file)
         {
@@ -1654,6 +1660,7 @@ namespace madscaler::ui
 
         const auto hasNotes = ! processor.getMelodyState().notes.empty();
         exportButton.setEnabled (hasNotes);
+        editButton.setEnabled (hasNotes);
         dragHandle.setEnabled (hasNotes);
         dragHandle.setAlpha (hasNotes ? 1.0f : 0.5f);
         newButton.setEnabled (! processor.getMelodyState().chords.empty());
@@ -1791,8 +1798,8 @@ namespace madscaler::ui
 
         area.removeFromTop (6);
         row = area.removeFromTop (24);
-        place (row, bassButton, 64);
-        place (row, flowButton, 112);
+        place (row, bassButton, 60);
+        place (row, flowButton, 106);
         dragHandle.setBounds (row.removeFromRight (100));
         row.removeFromRight (6);
         exportButton.setBounds (row.removeFromRight (64));
@@ -1800,14 +1807,734 @@ namespace madscaler::ui
         playButton.setBounds (row.removeFromRight (86));
         row.removeFromRight (6);
         newButton.setBounds (row.removeFromRight (92));
+        row.removeFromRight (6);
+        editButton.setBounds (row.removeFromRight (84));
 
         area.removeFromTop (6);
         roll.setBounds (area);
     }
+    NoteEditor::NoteEditor (MadScalerProcessor& p) : processor (p)
+    {
+        setWantsKeyboardFocus (true);
+
+        titleLabel.setText ("Edit notes", juce::dontSendNotification);
+        titleLabel.setColour (juce::Label::textColourId, Colours::accent);
+        titleLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        addAndMakeVisible (titleLabel);
+
+        hintLabel.setText ("Drag to move, drag the right edge to stretch, double-click to add or delete, right-click for more",
+                           juce::dontSendNotification);
+        hintLabel.setColour (juce::Label::textColourId, Colours::textDim);
+        hintLabel.setFont (juce::FontOptions (11.5f));
+        hintLabel.setMinimumHorizontalScale (0.8f);
+        addAndMakeVisible (hintLabel);
+
+        snapBox.addItemList ({ "Snap 1/4", "Snap 1/8", "Snap 1/16", "Snap 1/32", "Snap 1/8 triplet", "Snap 1/16 triplet", "No snap" }, 1);
+        snapBox.setSelectedId (3, juce::dontSendNotification);
+        snapBox.setTooltip ("Grid that notes move and stretch on");
+        addAndMakeVisible (snapBox);
+
+        scaleButton.setToggleState (true, juce::dontSendNotification);
+        scaleButton.setTooltip ("Keep moved and added notes on the melody's scale");
+        scaleButton.setColour (juce::ToggleButton::textColourId, Colours::textDim);
+        addAndMakeVisible (scaleButton);
+
+        for (auto* button : { &undoButton, &redoButton, &doneButton })
+        {
+            button->setColour (juce::TextButton::buttonColourId, Colours::pad);
+            button->setColour (juce::TextButton::textColourOffId, Colours::text);
+            addAndMakeVisible (*button);
+        }
+        doneButton.setColour (juce::TextButton::buttonColourId, Colours::padLit);
+        undoButton.onClick = [this] { undo(); };
+        redoButton.onClick = [this] { redo(); };
+        doneButton.onClick = [this]
+        {
+            if (onDone)
+                onDone();
+        };
+
+        update();
+    }
+
+    NoteEditor::~NoteEditor()
+    {
+        stopAudition();
+    }
+
+    void NoteEditor::visibilityChanged()
+    {
+        if (isVisible())
+        {
+            update();
+            grabKeyboardFocus();
+        }
+        else
+        {
+            stopAudition();
+        }
+    }
+
+    void NoteEditor::update()
+    {
+        // The melody changed somewhere else (a new melody, a setting, a state
+        // load): take it, and keep what was there so Undo can bring it back.
+        if (processor.getMelodyStateVersion() != lastVersion && dragMode == DragMode::none)
+        {
+            const auto& state = processor.getMelodyState();
+            const auto changed = state.notes.size() != notes.size()
+                                 || ! std::equal (state.notes.begin(), state.notes.end(), notes.begin(),
+                                                  [] (const madscaler::TimedNote& a, const madscaler::TimedNote& b)
+                                                  { return a.note == b.note && a.velocity == b.velocity
+                                                           && std::abs (a.startBeat - b.startBeat) < 1.0e-9
+                                                           && std::abs (a.lengthBeats - b.lengthBeats) < 1.0e-9; });
+            if (changed)
+            {
+                if (lastVersion >= 0 && ! notes.empty())
+                {
+                    undoStack.push_back (notes);
+                    redoStack.clear();
+                }
+                notes = state.notes;
+                selected.clear();
+                updateRange();
+                repaint();
+            }
+            lastVersion = processor.getMelodyStateVersion();
+        }
+
+        undoButton.setEnabled (! undoStack.empty());
+        redoButton.setEnabled (! redoStack.empty());
+    }
+
+    void NoteEditor::updateRange()
+    {
+        const auto& settings = processor.getMelodyState().settings;
+        auto low = settings.lowNote - 2, high = settings.highNote + 2;
+        for (const auto& note : notes)
+        {
+            low = std::min (low, note.note - 3);
+            high = std::max (high, note.note + 3);
+        }
+        if (high - low < 23)
+            high = low + 23;
+        lowNote = juce::jlimit (0, 104, low);
+        highNote = juce::jlimit (lowNote + 23, 127, high);
+    }
+
+    juce::Rectangle<int> NoteEditor::gridArea() const
+    {
+        auto area = getLocalBounds().reduced (10, 8);
+        area.removeFromTop (34);
+        area.removeFromBottom (62);
+        area.removeFromLeft (40);
+        area.removeFromTop (16); // chord names
+        return area;
+    }
+
+    juce::Rectangle<int> NoteEditor::velocityArea() const
+    {
+        auto area = getLocalBounds().reduced (10, 8);
+        area = area.removeFromBottom (54);
+        area.removeFromLeft (40);
+        return area;
+    }
+
+    double NoteEditor::gridStep() const
+    {
+        const double steps[] { 1.0, 0.5, 0.25, 0.125, 1.0 / 3.0, 1.0 / 6.0, 0.0 };
+        return steps[(size_t) juce::jlimit (0, 6, snapBox.getSelectedId() - 1)];
+    }
+
+    double NoteEditor::snapBeat (double beat) const
+    {
+        const auto step = gridStep();
+        return step > 0.0 ? std::round (beat / step) * step : beat;
+    }
+
+    double NoteEditor::xToBeat (float x) const
+    {
+        const auto area = gridArea().toFloat();
+        const auto total = std::max (0.001, processor.getMelodyState().totalBeats);
+        return (double) (x - area.getX()) / (double) area.getWidth() * total;
+    }
+
+    float NoteEditor::beatToX (double beat) const
+    {
+        const auto area = gridArea().toFloat();
+        const auto total = std::max (0.001, processor.getMelodyState().totalBeats);
+        return area.getX() + (float) (beat / total) * area.getWidth();
+    }
+
+    int NoteEditor::yToNote (float y) const
+    {
+        const auto area = gridArea().toFloat();
+        const auto rowHeight = area.getHeight() / (float) (highNote - lowNote + 1);
+        return lowNote + (int) std::floor ((area.getBottom() - y) / rowHeight);
+    }
+
+    float NoteEditor::noteToY (int note) const
+    {
+        const auto area = gridArea().toFloat();
+        const auto rowHeight = area.getHeight() / (float) (highNote - lowNote + 1);
+        return area.getBottom() - (float) (note - lowNote + 1) * rowHeight;
+    }
+
+    juce::Rectangle<float> NoteEditor::noteBounds (const madscaler::TimedNote& note) const
+    {
+        const auto area = gridArea().toFloat();
+        const auto rowHeight = area.getHeight() / (float) (highNote - lowNote + 1);
+        const auto x = beatToX (note.startBeat);
+        return { x, noteToY (note.note), std::max (4.0f, beatToX (note.startBeat + note.lengthBeats) - x), rowHeight };
+    }
+
+    int NoteEditor::noteAt (juce::Point<float> position) const
+    {
+        // The last drawn note is on top.
+        for (int i = (int) notes.size() - 1; i >= 0; --i)
+            if (noteBounds (notes[(size_t) i]).expanded (1.0f, 0.0f).contains (position))
+                return i;
+        return -1;
+    }
+
+    bool NoteEditor::inScale (int note) const
+    {
+        const auto& settings = processor.getMelodyState().settings;
+        const auto& scales = madscaler::getMelodyScales();
+        const auto& scale = scales[(size_t) juce::jlimit (0, (int) scales.size() - 1, settings.scaleIndex)];
+        const auto interval = ((note - settings.keyPitchClass) % 12 + 12) % 12;
+        return std::find (scale.intervals.begin(), scale.intervals.end(), interval) != scale.intervals.end();
+    }
+
+    int NoteEditor::snapPitch (int note, int direction) const
+    {
+        note = juce::jlimit (0, 127, note);
+        if (! scaleButton.getToggleState() || inScale (note))
+            return note;
+
+        // Move to the scale note in the direction of travel, or the nearest one.
+        for (int distance = 1; distance < 12; ++distance)
+        {
+            const int first = direction < 0 ? note - distance : note + distance;
+            const int second = direction < 0 ? note + distance : note - distance;
+            if (first >= 0 && first <= 127 && inScale (first)) return first;
+            if (direction == 0 && second >= 0 && second <= 127 && inScale (second)) return second;
+        }
+        return note;
+    }
+
+    void NoteEditor::pushUndo()
+    {
+        undoStack.push_back (notes);
+        if (undoStack.size() > 100)
+            undoStack.erase (undoStack.begin());
+        redoStack.clear();
+    }
+
+    void NoteEditor::commit()
+    {
+        auto state = processor.getMelodyState();
+        state.notes = notes;
+        std::stable_sort (state.notes.begin(), state.notes.end(),
+                          [] (const madscaler::TimedNote& a, const madscaler::TimedNote& b) { return a.startBeat < b.startBeat; });
+        processor.setMelodyState (state);
+        lastVersion = processor.getMelodyStateVersion();
+        undoButton.setEnabled (! undoStack.empty());
+        redoButton.setEnabled (! redoStack.empty());
+        repaint();
+    }
+
+    void NoteEditor::undo()
+    {
+        if (undoStack.empty())
+            return;
+        redoStack.push_back (notes);
+        notes = undoStack.back();
+        undoStack.pop_back();
+        selected.clear();
+        commit();
+        updateRange();
+    }
+
+    void NoteEditor::redo()
+    {
+        if (redoStack.empty())
+            return;
+        undoStack.push_back (notes);
+        notes = redoStack.back();
+        redoStack.pop_back();
+        selected.clear();
+        commit();
+        updateRange();
+    }
+
+    void NoteEditor::deleteSelected()
+    {
+        if (selected.empty())
+            return;
+        pushUndo();
+        for (auto it = selected.rbegin(); it != selected.rend(); ++it)
+            if (*it < (int) notes.size())
+                notes.erase (notes.begin() + *it);
+        selected.clear();
+        commit();
+    }
+
+    void NoteEditor::transposeSelected (int semitones)
+    {
+        if (selected.empty())
+            return;
+        pushUndo();
+        int last = -1;
+        for (auto index : selected)
+        {
+            auto& note = notes[(size_t) index];
+            if (std::abs (semitones) == 1 && scaleButton.getToggleState())
+            {
+                // One scale step.
+                auto next = note.note + semitones;
+                while (next > 0 && next < 127 && ! inScale (next))
+                    next += semitones;
+                note.note = juce::jlimit (0, 127, next);
+            }
+            else
+            {
+                note.note = juce::jlimit (0, 127, note.note + semitones);
+            }
+            last = note.note;
+        }
+        commit();
+        updateRange();
+        if (last >= 0)
+        {
+            audition (last);
+            juce::Timer::callAfterDelay (200, [safe = juce::Component::SafePointer<NoteEditor> (this)]
+                                         {
+                                             if (safe != nullptr)
+                                                 safe->stopAudition();
+                                         });
+        }
+    }
+
+    void NoteEditor::showNoteMenu (int index)
+    {
+        juce::PopupMenu menu;
+        menu.addItem (1, "Delete");
+        menu.addItem (2, "Duplicate after");
+        menu.addSeparator();
+        menu.addItem (3, "Octave up");
+        menu.addItem (4, "Octave down");
+        menu.addSeparator();
+        menu.addItem (5, "Loud (velocity 120)");
+        menu.addItem (6, "Normal (velocity 100)");
+        menu.addItem (7, "Soft (velocity 70)");
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
+                            [safe = juce::Component::SafePointer<NoteEditor> (this), index] (int result)
+                            {
+                                if (safe == nullptr || result == 0 || index >= (int) safe->notes.size())
+                                    return;
+                                auto& self = *safe;
+                                if (result == 1) { self.deleteSelected(); return; }
+                                if (result == 3) { self.transposeSelected (12); return; }
+                                if (result == 4) { self.transposeSelected (-12); return; }
+
+                                self.pushUndo();
+                                if (result == 2)
+                                {
+                                    auto copy = self.notes[(size_t) index];
+                                    copy.startBeat += copy.lengthBeats;
+                                    if (copy.startBeat + copy.lengthBeats <= self.processor.getMelodyState().totalBeats + 1.0e-9)
+                                    {
+                                        self.notes.push_back (copy);
+                                        self.selected = { (int) self.notes.size() - 1 };
+                                    }
+                                }
+                                else
+                                {
+                                    const int velocity = result == 5 ? 120 : result == 6 ? 100 : 70;
+                                    for (auto i : self.selected)
+                                        self.notes[(size_t) i].velocity = velocity;
+                                }
+                                self.commit();
+                            });
+    }
+
+    void NoteEditor::audition (int note)
+    {
+        if (note == auditionNote)
+            return;
+        stopAudition();
+        auditionNote = note;
+        processor.setMelodyNotePressed (note, true);
+    }
+
+    void NoteEditor::stopAudition()
+    {
+        if (auditionNote >= 0)
+            processor.setMelodyNotePressed (auditionNote, false);
+        auditionNote = -1;
+    }
+
+    bool NoteEditor::isOnEdge (juce::Rectangle<float> bounds, float x)
+    {
+        // The stretch handle is the right quarter of the note, at most 6 pixels,
+        // so short notes can still be grabbed to move them.
+        return x > bounds.getRight() - std::min (6.0f, bounds.getWidth() * 0.25f);
+    }
+
+    void NoteEditor::mouseMove (const juce::MouseEvent& e)
+    {
+        const auto index = gridArea().contains (e.getPosition()) ? noteAt (e.position) : -1;
+        if (index >= 0 && isOnEdge (noteBounds (notes[(size_t) index]), e.position.x))
+            setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+        else if (index >= 0)
+            setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+        else
+            setMouseCursor (juce::MouseCursor::NormalCursor);
+    }
+
+    void NoteEditor::mouseDown (const juce::MouseEvent& e)
+    {
+        grabKeyboardFocus();
+        dragMode = DragMode::none;
+        dragChanged = false;
+        dragStartNotes = notes;
+
+        if (velocityArea().contains (e.getPosition()))
+        {
+            dragMode = DragMode::velocity;
+            mouseDrag (e);
+            return;
+        }
+
+        if (! gridArea().contains (e.getPosition()))
+            return;
+
+        const auto index = noteAt (e.position);
+        if (index < 0)
+        {
+            if (! e.mods.isShiftDown())
+                selected.clear();
+            repaint();
+            return;
+        }
+
+        if (e.mods.isShiftDown())
+        {
+            if (! selected.insert (index).second)
+                selected.erase (index);
+        }
+        else if (selected.count (index) == 0)
+        {
+            selected = { index };
+        }
+
+        if (e.mods.isPopupMenu())
+        {
+            selected.insert (index);
+            repaint();
+            showNoteMenu (index);
+            return;
+        }
+
+        dragNote = index;
+        dragMode = isOnEdge (noteBounds (notes[(size_t) index]), e.position.x) ? DragMode::resize : DragMode::move;
+        audition (notes[(size_t) index].note);
+        repaint();
+    }
+
+    void NoteEditor::mouseDrag (const juce::MouseEvent& e)
+    {
+        const auto total = processor.getMelodyState().totalBeats;
+        const auto step = gridStep();
+
+        if (dragMode == DragMode::velocity)
+        {
+            // Set the loudness of the note under the mouse (all selected notes
+            // when it is one of them).
+            const auto area = velocityArea().toFloat();
+            const auto beat = xToBeat (e.position.x);
+            int index = -1;
+            for (int i = 0; i < (int) notes.size(); ++i)
+            {
+                const auto& note = notes[(size_t) i];
+                if (beat >= note.startBeat && beat < note.startBeat + note.lengthBeats)
+                    if (index < 0 || selected.count (i) > 0)
+                        index = i;
+            }
+            if (index < 0)
+                return;
+
+            const auto velocity = juce::jlimit (1, 127, (int) std::round ((area.getBottom() - e.position.y) / area.getHeight() * 127.0f));
+            if (selected.count (index) > 0)
+                for (auto i : selected)
+                    notes[(size_t) i].velocity = velocity;
+            else
+                notes[(size_t) index].velocity = velocity;
+            dragChanged = true;
+            commit();
+            return;
+        }
+
+        if (dragNote < 0 || dragNote >= (int) dragStartNotes.size())
+            return;
+
+        auto deltaBeats = xToBeat (e.position.x) - xToBeat (e.mouseDownPosition.x);
+        if (step > 0.0)
+            deltaBeats = std::round (deltaBeats / step) * step;
+
+        if (dragMode == DragMode::move)
+        {
+            const auto deltaPitch = yToNote (e.position.y) - yToNote (e.mouseDownPosition.y);
+            for (auto i : selected)
+            {
+                const auto& original = dragStartNotes[(size_t) i];
+                auto& note = notes[(size_t) i];
+                note.startBeat = juce::jlimit (0.0, std::max (0.0, total - original.lengthBeats), original.startBeat + deltaBeats);
+                note.note = snapPitch (original.note + deltaPitch, deltaPitch);
+            }
+            audition (notes[(size_t) dragNote].note);
+        }
+        else if (dragMode == DragMode::resize)
+        {
+            const auto& original = dragStartNotes[(size_t) dragNote];
+            const auto end = snapBeat (original.startBeat + original.lengthBeats + deltaBeats);
+            const auto change = end - (original.startBeat + original.lengthBeats);
+            const auto minimum = step > 0.0 ? step * 0.5 : 0.05;
+            for (auto i : selected)
+            {
+                const auto& start = dragStartNotes[(size_t) i];
+                notes[(size_t) i].lengthBeats = juce::jlimit (minimum, std::max (minimum, total - start.startBeat),
+                                                              start.lengthBeats + change);
+            }
+        }
+        else
+        {
+            return;
+        }
+
+        dragChanged = true;
+        commit();
+    }
+
+    void NoteEditor::mouseUp (const juce::MouseEvent&)
+    {
+        if (dragChanged)
+        {
+            undoStack.push_back (dragStartNotes);
+            redoStack.clear();
+            updateRange();
+        }
+        dragMode = DragMode::none;
+        dragChanged = false;
+        dragNote = -1;
+        stopAudition();
+        undoButton.setEnabled (! undoStack.empty());
+        redoButton.setEnabled (! redoStack.empty());
+        repaint();
+    }
+
+    void NoteEditor::mouseDoubleClick (const juce::MouseEvent& e)
+    {
+        if (! gridArea().contains (e.getPosition()) || e.mods.isPopupMenu())
+            return;
+
+        const auto& state = processor.getMelodyState();
+        if (state.totalBeats <= 0.0)
+            return;
+
+        const auto index = noteAt (e.position);
+        if (index >= 0)
+        {
+            selected = { index };
+            deleteSelected();
+            return;
+        }
+
+        const auto step = gridStep();
+        const auto length = step > 0.0 ? step : 0.25;
+        auto start = xToBeat (e.position.x);
+        if (step > 0.0)
+            start = std::floor (start / step + 1.0e-9) * step;
+        start = juce::jlimit (0.0, std::max (0.0, state.totalBeats - length), start);
+
+        pushUndo();
+        notes.push_back ({ start, length, snapPitch (yToNote (e.position.y), 0), state.settings.velocity });
+        selected = { (int) notes.size() - 1 };
+        commit();
+    }
+
+    bool NoteEditor::keyPressed (const juce::KeyPress& key)
+    {
+        const auto mods = key.getModifiers();
+        const auto letter = juce::CharacterFunctions::toUpperCase ((juce::juce_wchar) key.getKeyCode());
+        if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+        {
+            deleteSelected();
+            return true;
+        }
+        if (key.getKeyCode() == juce::KeyPress::upKey || key.getKeyCode() == juce::KeyPress::downKey)
+        {
+            const auto direction = key.getKeyCode() == juce::KeyPress::upKey ? 1 : -1;
+            transposeSelected (mods.isShiftDown() ? 12 * direction : direction);
+            return true;
+        }
+        if (key.getKeyCode() == juce::KeyPress::leftKey || key.getKeyCode() == juce::KeyPress::rightKey)
+        {
+            if (selected.empty())
+                return true;
+            const auto step = gridStep() > 0.0 ? gridStep() : 0.25;
+            const auto delta = key.getKeyCode() == juce::KeyPress::rightKey ? step : -step;
+            const auto total = processor.getMelodyState().totalBeats;
+            pushUndo();
+            for (auto i : selected)
+            {
+                auto& note = notes[(size_t) i];
+                note.startBeat = juce::jlimit (0.0, std::max (0.0, total - note.lengthBeats), note.startBeat + delta);
+            }
+            commit();
+            return true;
+        }
+        if (mods.isCommandDown() && letter == 'Z')
+        {
+            mods.isShiftDown() ? redo() : undo();
+            return true;
+        }
+        if (mods.isCommandDown() && letter == 'Y')
+        {
+            redo();
+            return true;
+        }
+        if (mods.isCommandDown() && letter == 'A')
+        {
+            selected.clear();
+            for (int i = 0; i < (int) notes.size(); ++i)
+                selected.insert (i);
+            repaint();
+            return true;
+        }
+        return false;
+    }
+
+    void NoteEditor::paint (juce::Graphics& g)
+    {
+        g.setColour (Colours::panel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+
+        const auto& state = processor.getMelodyState();
+        const auto grid = gridArea();
+        const auto gridF = grid.toFloat();
+
+        g.setColour (Colours::background);
+        g.fillRect (grid);
+        g.fillRect (velocityArea());
+
+        if (state.chords.empty() || state.totalBeats <= 0.0)
+        {
+            g.setColour (Colours::textDim);
+            g.setFont (juce::FontOptions (13.0f));
+            g.drawText ("No melody yet. Send chords to the Melody tab with \"To Melody\" first.", grid, juce::Justification::centred);
+            return;
+        }
+
+        // Rows: black keys darker, C rows marked, notes outside the scale dimmed.
+        const auto rowHeight = gridF.getHeight() / (float) (highNote - lowNote + 1);
+        g.setFont (juce::FontOptions (juce::jlimit (9.0f, 12.0f, rowHeight - 2.0f)));
+        for (int n = lowNote; n <= highNote; ++n)
+        {
+            const auto y = noteToY (n);
+            const auto row = juce::Rectangle<float> (gridF.getX(), y, gridF.getWidth(), rowHeight);
+            if (! inScale (n))
+            {
+                g.setColour (Colours::panel.withAlpha (0.55f));
+                g.fillRect (row);
+            }
+            g.setColour (Colours::pad.withAlpha (0.5f));
+            g.drawHorizontalLine ((int) row.getBottom(), gridF.getX(), gridF.getRight());
+
+            const auto black = juce::MidiMessage::isMidiNoteBlack (n);
+            g.setColour (black ? Colours::pad : Colours::scaleKey.withAlpha (0.85f));
+            g.fillRect (juce::Rectangle<float> ((float) grid.getX() - 38.0f, y, 36.0f, rowHeight).reduced (0.0f, 0.5f));
+            if (n % 12 == 0 || rowHeight >= 12.0f)
+            {
+                g.setColour (black ? Colours::text : Colours::background);
+                g.drawText (juce::MidiMessage::getMidiNoteName (n, true, true, 4),
+                            juce::Rectangle<float> ((float) grid.getX() - 37.0f, y, 34.0f, rowHeight), juce::Justification::centredRight);
+            }
+        }
+
+        // Beat lines, and chord boundaries with names.
+        const auto step = gridStep();
+        for (double beat = 0.0; beat <= state.totalBeats + 1.0e-9; beat += (step > 0.0 ? step : 0.25))
+        {
+            const auto onBeat = std::abs (beat - std::round (beat)) < 1.0e-6;
+            g.setColour (Colours::pad.withAlpha (onBeat ? 0.9f : 0.35f));
+            g.drawVerticalLine ((int) beatToX (beat), gridF.getY(), gridF.getBottom());
+        }
+
+        double position = 0.0;
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        for (const auto& chord : state.chords)
+        {
+            const auto x = beatToX (position);
+            g.setColour (Colours::accent.withAlpha (0.6f));
+            g.drawVerticalLine ((int) x, gridF.getY() - 16.0f, gridF.getBottom());
+            g.setColour (Colours::textDim);
+            g.drawText (juce::String::fromUTF8 (chord.name.c_str()),
+                        juce::Rectangle<float> (x + 4.0f, gridF.getY() - 16.0f, beatToX (position + chord.lengthBeats) - x - 6.0f, 16.0f),
+                        juce::Justification::centredLeft);
+            position += chord.lengthBeats;
+        }
+
+        // Notes, brighter when louder; selected notes outlined.
+        const auto velocityArea = this->velocityArea().toFloat();
+        for (int i = 0; i < (int) notes.size(); ++i)
+        {
+            const auto& note = notes[(size_t) i];
+            const auto isSelected = selected.count (i) > 0;
+            const auto bounds = noteBounds (note).reduced (0.5f, 0.5f);
+            const auto colour = Colours::accent.withMultipliedBrightness (0.55f + 0.45f * (float) note.velocity / 127.0f);
+            g.setColour (isSelected ? Colours::padLit : colour);
+            g.fillRoundedRectangle (bounds, 2.0f);
+            g.setColour (isSelected ? Colours::text : Colours::background.withAlpha (0.6f));
+            g.drawRoundedRectangle (bounds, 2.0f, isSelected ? 1.5f : 1.0f);
+
+            // Velocity bar.
+            const auto barHeight = velocityArea.getHeight() * (float) note.velocity / 127.0f;
+            const auto x = beatToX (note.startBeat);
+            g.setColour (isSelected ? Colours::padLit : Colours::accent.withAlpha (0.8f));
+            g.fillRect (juce::Rectangle<float> (x + 1.0f, velocityArea.getBottom() - barHeight, 3.0f, barHeight));
+            g.fillEllipse (x - 0.5f, velocityArea.getBottom() - barHeight - 2.5f, 6.0f, 6.0f);
+        }
+
+        g.setColour (Colours::textDim);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("Velocity", juce::Rectangle<float> (velocityArea.getX() - 40.0f, velocityArea.getY(), 38.0f, velocityArea.getHeight()),
+                    juce::Justification::centredRight);
+    }
+
+    void NoteEditor::resized()
+    {
+        auto bar = getLocalBounds().reduced (10, 8).removeFromTop (26);
+        titleLabel.setBounds (bar.removeFromLeft (90));
+        doneButton.setBounds (bar.removeFromRight (70));
+        bar.removeFromRight (6);
+        redoButton.setBounds (bar.removeFromRight (56));
+        bar.removeFromRight (6);
+        undoButton.setBounds (bar.removeFromRight (56));
+        bar.removeFromRight (10);
+        scaleButton.setBounds (bar.removeFromRight (140));
+        bar.removeFromRight (6);
+        snapBox.setBounds (bar.removeFromRight (140));
+        bar.removeFromRight (6);
+        hintLabel.setBounds (bar);
+    }
+
 } // namespace madscaler::ui
 
 MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), coloursPanel (p), progressionStrip (p), libraryPanel (p, progressionStrip), melodyPanel (p), keyboard (p)
+    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), coloursPanel (p), progressionStrip (p), libraryPanel (p, progressionStrip), melodyPanel (p), noteEditor (p), keyboard (p)
 {
     auto& lf = getLookAndFeel();
     lf.setColour (juce::ComboBox::backgroundColourId, Colours::panel);
@@ -1908,6 +2635,7 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (coloursPanel);
     addChildComponent (libraryPanel);
     addChildComponent (melodyPanel);
+    addChildComponent (noteEditor);
     addAndMakeVisible (progressionStrip);
 
     for (auto* tab : { &coloursTab, &libraryTab, &detectTab, &melodyTab })
@@ -1925,6 +2653,12 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     libraryTab.onClick = [this] { showTab (1); };
     detectTab.onClick = [this] { showTab (2); };
     melodyTab.onClick = [this] { showTab (3); };
+    melodyPanel.onEditNotes = [this]
+    {
+        noteEditor.setVisible (true);
+        noteEditor.toFront (true);
+    };
+    noteEditor.onDone = [this] { noteEditor.setVisible (false); };
     progressionStrip.onSendToMelody = [this]
     {
         melodyPanel.takeChords();
@@ -2045,6 +2779,7 @@ void MadScalerEditor::resized()
     libraryPanel.setBounds (panelArea);
     detectionPanel.setBounds (panelArea);
     melodyPanel.setBounds (panelArea);
+    noteEditor.setBounds (panelArea.getUnion (area.withTrimmedBottom (88)));
     area.removeFromTop (8);
     progressionStrip.setBounds (area.removeFromTop (84));
     area.removeFromTop (8);
@@ -2079,6 +2814,8 @@ void MadScalerEditor::showTab (int tab)
     libraryPanel.setVisible (tab == 1);
     detectionPanel.setVisible (tab == 2);
     melodyPanel.setVisible (tab == 3);
+    if (tab != 3)
+        noteEditor.setVisible (false);
 }
 
 void MadScalerEditor::timerCallback()
@@ -2099,6 +2836,7 @@ void MadScalerEditor::timerCallback()
     coloursPanel.update();
     progressionStrip.update();
     melodyPanel.update();
+    noteEditor.update();
 
     // Mark the pads that usually follow the last chord played.
     const auto lastDegree = processor.getLastPlayedDegree();
