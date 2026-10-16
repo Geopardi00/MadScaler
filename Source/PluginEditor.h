@@ -17,6 +17,9 @@ namespace madscaler::ui
         void setChord (const madscaler::Chord& chord);
         void setLit (bool shouldBeLit);
 
+        // Marks the pad as a likely next chord: 0 = most likely, -1 = not suggested.
+        void setSuggestion (int rank);
+
         void paint (juce::Graphics&) override;
         void mouseDown (const juce::MouseEvent&) override;
         void mouseUp (const juce::MouseEvent&) override;
@@ -30,6 +33,7 @@ namespace madscaler::ui
         madscaler::Chord chord;
         bool lit = false;
         bool held = false;
+        int suggestion = -1;
     };
 
     // Shows the notes MadScaler is sending out, with the current scale shaded.
@@ -84,6 +88,92 @@ namespace madscaler::ui
         madscaler::DetectedChord chord;
         bool lit = false;
         bool held = false;
+    };
+
+    // A colour chord (extension, borrowed or secondary chord). Holding the mouse
+    // down plays it.
+    class ColourChip : public juce::Component
+    {
+    public:
+        ColourChip (MadScalerProcessor& processor, int id);
+
+        void setChord (const madscaler::ColourChord* chord);
+        void setLit (bool shouldBeLit);
+        int getId() const { return id; }
+
+        void paint (juce::Graphics&) override;
+        void mouseDown (const juce::MouseEvent&) override;
+        void mouseUp (const juce::MouseEvent&) override;
+
+        std::function<void (int id, const madscaler::ColourChord&)> onPressed;
+
+    private:
+        MadScalerProcessor& processor;
+        const int id;
+        bool hasChord = false;
+        madscaler::ColourChord chord;
+        bool lit = false;
+        bool held = false;
+    };
+
+    // Circle of Fifths: major chords on the outer ring, relative minors inside.
+    // Chords of the current scale are highlighted. Click to play, right-click to
+    // change key.
+    class CircleOfFifths : public juce::Component
+    {
+    public:
+        static constexpr int firstId = 100; // colour chord ids used by the circle
+
+        explicit CircleOfFifths (MadScalerProcessor& processor);
+
+        void refresh();
+        void setLitId (int id);
+
+        void paint (juce::Graphics&) override;
+        void mouseDown (const juce::MouseEvent&) override;
+        void mouseUp (const juce::MouseEvent&) override;
+
+        std::function<void (const madscaler::ColourChord&)> onPressed;
+
+    private:
+        bool hitTestSegment (juce::Point<float> position, int& segment, bool& minor) const;
+        void setKey (int pitchClass, bool minor);
+
+        MadScalerProcessor& processor;
+        std::array<bool, 24> inScale {};
+        int tonicSegment = -1; // 0-11 major ring, 12-23 minor ring
+        int litId = -1;
+        int heldId = -1;
+    };
+
+    // Colours for the last pad pressed, next to the Circle of Fifths.
+    class ColoursPanel : public juce::Component
+    {
+    public:
+        static constexpr int maxChipsPerGroup = 8;
+        static constexpr int numGroups = 3;
+
+        explicit ColoursPanel (MadScalerProcessor& processor);
+
+        void setDegree (int degree);
+        void refresh();
+        void update(); // called from the editor's timer
+
+        void paint (juce::Graphics&) override;
+        void resized() override;
+
+        // Called when a chord is pressed, with its name and notes.
+        std::function<void (const std::string&, const std::vector<int>&)> onChordPressed;
+
+    private:
+        MadScalerProcessor& processor;
+        int degree = 0;
+        std::vector<madscaler::ColourGroup> groups;
+        juce::Label titleLabel, hintLabel;
+        std::array<juce::Label, numGroups> groupLabels;
+        std::array<std::array<std::unique_ptr<ColourChip>, maxChipsPerGroup>, numGroups> chips;
+    public:
+        CircleOfFifths circle;
     };
 
     // One chord of the progression. Right-click for length, move and delete.
@@ -201,6 +291,7 @@ public:
 private:
     void timerCallback() override;
     void refreshChords();
+    void showTab (bool colours);
 
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -228,6 +319,9 @@ private:
 
     std::array<std::unique_ptr<madscaler::ui::ChordPad>, MadScalerProcessor::numDegrees> pads;
     madscaler::ui::DetectionPanel detectionPanel;
+    madscaler::ui::ColoursPanel coloursPanel;
+    juce::TextButton coloursTab { "Colours" }, detectTab { "Detect" };
+    int lastSuggestedDegree = -2;
     madscaler::ui::ProgressionStrip progressionStrip;
     madscaler::ui::ScaleKeyboard keyboard;
 

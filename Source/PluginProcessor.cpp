@@ -143,6 +143,33 @@ madscaler::Chord MadScalerProcessor::getChordForDegree (int degree, const std::v
     return chord;
 }
 
+std::vector<madscaler::ColourGroup> MadScalerProcessor::getColoursForDegree (int degree, const std::vector<int>& previousNotes) const
+{
+    const auto key = getKey();
+    const auto octave = (int) octaveParam->load();
+    const auto sevenths = chordSizeParam->load() > 0.5f;
+    auto groups = madscaler::getChordColours (key, getScaleIndex(), degree, sevenths, 12 * (octave + 1) + key);
+
+    const auto voicing = getVoicingSettings();
+    for (auto& group : groups)
+        for (auto& chord : group.chords)
+            chord.notes = madscaler::voiceChord (chord.notes, voicing, previousNotes);
+    return groups;
+}
+
+madscaler::ColourChord MadScalerProcessor::getCircleChord (int position, bool minor, const std::vector<int>& previousNotes) const
+{
+    // Roots sit in the octave above the key's tonic, like the pads.
+    const auto key = getKey();
+    const auto octave = (int) octaveParam->load();
+    auto chord = madscaler::buildCircleChord (position, minor, 12 * (octave + 1));
+    if (chord.rootPitchClass < key)
+        for (auto& note : chord.notes)
+            note = juce::jmin (127, note + 12);
+    chord.notes = madscaler::voiceChord (chord.notes, getVoicingSettings(), previousNotes);
+    return chord;
+}
+
 void MadScalerProcessor::pushUiEvent (const UiEvent& event)
 {
     const auto scope = uiFifo.write (1);
@@ -191,6 +218,18 @@ void MadScalerProcessor::setDetectedChordPressed (int slot, const std::vector<in
     pushUiEvent (event);
 }
 
+void MadScalerProcessor::setColourChordPressed (int id, const std::vector<int>& notes, bool pressed)
+{
+    UiEvent event;
+    event.kind = UiEvent::Kind::colourChord;
+    event.index = id;
+    event.pressed = pressed;
+    event.numNotes = juce::jmin ((int) notes.size(), maxChordNotes);
+    for (int i = 0; i < event.numNotes; ++i)
+        event.notes[(size_t) i] = juce::jlimit (0, 127, notes[(size_t) i]);
+    pushUiEvent (event);
+}
+
 void MadScalerProcessor::setHeldInputNote (int midiNote, bool held)
 {
     if (! juce::isPositiveAndBelow (midiNote, 128))
@@ -221,6 +260,7 @@ void MadScalerProcessor::startChord (HeldChord& held, int degree, juce::MidiBuff
     startNotes (held, chord.notes.data(), (int) chord.notes.size(), out, samplePos);
     held.degree = degree;
     lastChordNotes = chord.notes;
+    lastPlayedDegree.store (degree);
 }
 
 void MadScalerProcessor::startNotes (HeldChord& held, const int* notes, int numNotes, juce::MidiBuffer& out, int samplePos)
@@ -280,6 +320,8 @@ void MadScalerProcessor::stopAllChords (juce::MidiBuffer& out, int samplePos)
         stopChord (held, out, samplePos);
     for (auto& held : progressionHeld)
         stopChord (held, out, samplePos);
+    stopChord (colourHeld, out, samplePos);
+    colourHeldId = -1;
     playingSlot = -1;
 }
 
@@ -299,6 +341,7 @@ void MadScalerProcessor::updateActiveDegreeMask()
         if (detectedChordsHeld[i].active)
             detectedMask |= 1u << i;
     activeDetectedMask.store (detectedMask);
+    activeColourChord.store (colourHeld.active ? colourHeldId : -1);
 }
 
 void MadScalerProcessor::beginPatternBlock (int, juce::MidiBuffer& out)
@@ -381,6 +424,7 @@ void MadScalerProcessor::syncPattern (int samplePos)
     for (const auto& held : keyChords)          consider (held);
     for (const auto& held : detectedChordsHeld) consider (held);
     for (const auto& held : progressionHeld)  consider (held);
+    consider (colourHeld);
 
     const auto serial = newest != nullptr ? newest->serial : 0u;
     if (serial == patternSerial)
@@ -656,6 +700,23 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                             startNotes (held, event.notes.data(), event.numNotes, out, 0);
                         else
                             stopChord (held, out, 0);
+                        syncPattern (0);
+                        break;
+                    }
+
+                    case UiEvent::Kind::colourChord:
+                    {
+                        if (event.pressed)
+                        {
+                            startNotes (colourHeld, event.notes.data(), event.numNotes, out, 0);
+                            colourHeldId = event.index;
+                            lastChordNotes.assign (event.notes.begin(), event.notes.begin() + event.numNotes);
+                        }
+                        else if (event.index == colourHeldId)
+                        {
+                            stopChord (colourHeld, out, 0);
+                            colourHeldId = -1;
+                        }
                         syncPattern (0);
                         break;
                     }

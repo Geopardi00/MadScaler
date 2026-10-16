@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ChordColours.h"
 #include "ChordDetector.h"
 #include "ChordEngine.h"
 #include "PatternEngine.h"
@@ -59,6 +60,23 @@ public:
 
     // Called from the editor when a detected chord is pressed or released.
     void setDetectedChordPressed (int slot, const std::vector<int>& notes, bool pressed);
+
+    // Called from the editor when a colour chord (or Circle of Fifths chord) is
+    // pressed or released. id is any number the editor uses to light the chip.
+    void setColourChordPressed (int id, const std::vector<int>& notes, bool pressed);
+
+    // id of the colour chord sounding now, or -1.
+    int getActiveColourChord() const { return activeColourChord.load(); }
+
+    // Scale degree of the last chord played from a pad or MIDI key, or -1.
+    int getLastPlayedDegree() const { return lastPlayedDegree.load(); }
+
+    // Colours for a degree's chord, with the current key, scale, size, octave and
+    // voicing applied. previousNotes is used for voice leading.
+    std::vector<madscaler::ColourGroup> getColoursForDegree (int degree, const std::vector<int>& previousNotes = {}) const;
+
+    // A Circle of Fifths triad in the current octave, voiced like the pads.
+    madscaler::ColourChord getCircleChord (int position, bool minor, const std::vector<int>& previousNotes = {}) const;
 
     // MIDI notes currently held on MadScaler's input (keyboard, DAW track or
     // on-screen keys), excluding keys used to trigger chords. Safe to call from any thread.
@@ -152,10 +170,10 @@ private:
     // through a lock-free single-producer single-consumer queue.
     struct UiEvent
     {
-        enum class Kind { pad, keyboardNote, detectedChord };
+        enum class Kind { pad, keyboardNote, detectedChord, colourChord };
 
         Kind kind = Kind::pad;
-        int index = 0; // degree, MIDI note or detected chord slot
+        int index = 0; // degree, MIDI note, detected chord slot or colour chord id
         bool pressed = false;
         int numNotes = 0;
         std::array<int, maxChordNotes> notes {};
@@ -173,6 +191,10 @@ private:
     std::array<std::array<int, 128>, 16> noteRefCount {};
     std::atomic<uint32_t> activeDegreeMask { 0 };
     std::atomic<uint32_t> activeDetectedMask { 0 };
+    HeldChord colourHeld;
+    int colourHeldId = -1;
+    std::atomic<int> activeColourChord { -1 };
+    std::atomic<int> lastPlayedDegree { -1 };
     std::array<std::atomic<uint32_t>, 4> heldInputNotes {}; // 128 bits, one per MIDI note
     juce::MidiBuffer outputMidi;
     std::vector<int> lastChordNotes; // audio thread only, for voice leading
