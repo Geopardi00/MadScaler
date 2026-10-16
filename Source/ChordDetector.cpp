@@ -60,6 +60,16 @@ namespace madscaler
 
     DetectedChord detectChord (const std::vector<int>& midiNotes)
     {
+        return detectChord (midiNotes, -1, 0);
+    }
+
+    DetectedChord detectChord (const std::vector<int>& midiNotes, int keyPitchClass, int scaleIndex)
+    {
+        auto name = [&] (int pitchClass)
+        {
+            return keyPitchClass < 0 ? getNoteName (pitchClass) : spellNote (pitchClass, keyPitchClass, scaleIndex);
+        };
+
         DetectedChord result;
         if (midiNotes.empty())
             return result;
@@ -103,9 +113,9 @@ namespace madscaler
                     result.valid = true;
                     result.rootPitchClass = root;
                     result.bassPitchClass = bass;
-                    result.name = getNoteName (root) + shape.suffix;
+                    result.name = name (root) + shape.suffix;
                     if (root != bass)
-                        result.name += "/" + getNoteName (bass);
+                        result.name += "/" + name (bass);
                 }
             }
         }
@@ -174,7 +184,7 @@ namespace madscaler
                 candidate.suggestion.keyPitchClass = key;
                 candidate.suggestion.scaleIndex = scale;
                 candidate.suggestion.notesOutside = outsideCount;
-                candidate.suggestion.name = getNoteName (key) + " " + scales[(size_t) scale].name;
+                candidate.suggestion.name = spellNote (key, key, scale) + " " + scales[(size_t) scale].name;
                 candidate.score = score;
                 candidates.push_back (candidate);
             }

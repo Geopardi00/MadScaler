@@ -44,6 +44,50 @@ namespace madscaler
         return getNoteNames()[(size_t) wrapPitchClass (pitchClass)];
     }
 
+    std::string getNoteName (int pitchClass, bool flats)
+    {
+        static const std::array<const char*, 12> flatNames { "C", "Db", "D", "Eb", "E", "F",
+                                                             "Gb", "G", "Ab", "A", "Bb", "B" };
+        return flats ? flatNames[(size_t) wrapPitchClass (pitchClass)] : getNoteName (pitchClass);
+    }
+
+    bool keyUsesFlats (int keyPitchClass, int scaleIndex)
+    {
+        // Score each spelling: letters used twice are worst, then accidentals.
+        auto score = [&] (bool flats)
+        {
+            std::array<int, 7> letterCount {};
+            int accidentals = 0;
+            for (auto interval : getScales()[(size_t) clampScaleIndex (scaleIndex)].intervals)
+            {
+                const auto name = getNoteName (keyPitchClass + interval, flats);
+                ++letterCount[(size_t) ((name[0] - 'A' + 7) % 7)];
+                accidentals += name.size() > 1 ? 1 : 0;
+            }
+
+            int duplicates = 0;
+            for (auto count : letterCount)
+                duplicates += std::max (0, count - 1);
+            return duplicates * 100 + accidentals;
+        };
+
+        return score (true) < score (false);
+    }
+
+    std::string spellNote (int pitchClass, int keyPitchClass, int scaleIndex)
+    {
+        const auto pcs = getScalePitchClasses (keyPitchClass, scaleIndex);
+        if (std::find (pcs.begin(), pcs.end(), wrapPitchClass (pitchClass)) != pcs.end())
+            return getNoteName (pitchClass, keyUsesFlats (keyPitchClass, scaleIndex));
+
+        switch (wrapPitchClass (pitchClass - keyPitchClass))
+        {
+            case 1: case 3: case 8: case 10: return getNoteName (pitchClass, true);
+            case 6: case 9: case 11:         return getNoteName (pitchClass, false);
+            default:                         return getNoteName (pitchClass, keyUsesFlats (keyPitchClass, scaleIndex));
+        }
+    }
+
     std::vector<int> getScalePitchClasses (int keyPitchClass, int scaleIndex)
     {
         std::vector<int> result;
@@ -165,7 +209,7 @@ namespace madscaler
         }
 
         chord.quality = identifyQuality (intervalsAboveRoot);
-        chord.name = getNoteName (chord.rootPitchClass) + getQualitySuffix (chord.quality);
+        chord.name = spellNote (chord.rootPitchClass, keyPitchClass, scaleIndex) + getQualitySuffix (chord.quality);
         chord.roman = getRomanNumeral (degree, chord.quality);
         return chord;
     }

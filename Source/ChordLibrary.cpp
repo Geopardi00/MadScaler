@@ -303,7 +303,7 @@ namespace madscaler
                 continue;
 
             ProgressionSlot slot;
-            slot.name = getNoteName (keyPitchClass + chord.rootOffset) + chord.suffix;
+            slot.name = spellNote (keyPitchClass + chord.rootOffset, keyPitchClass, progression.scaleIndex) + chord.suffix;
             slot.lengthBeats = chord.beats;
             for (auto interval : chord.intervals)
                 slot.notes.push_back (std::clamp (baseNote + chord.rootOffset + interval, 0, 127));

@@ -55,6 +55,17 @@ namespace madscaler
 
     std::string getNoteName (int pitchClass);
 
+    // Note name with sharps or flats.
+    std::string getNoteName (int pitchClass, bool flats);
+
+    // True when the scale is written with flats (F major, C minor ...): the
+    // spelling that gives every note of the scale its own letter.
+    bool keyUsesFlats (int keyPitchClass, int scaleIndex);
+
+    // Names a pitch class as it is usually written in a key: scale notes follow
+    // the key signature; notes outside it are b2, b3, #4, b6, b7, 6 or 7 from the tonic.
+    std::string spellNote (int pitchClass, int keyPitchClass, int scaleIndex);
+
     // Pitch classes (0-11) of the scale built on the given key.
     std::vector<int> getScalePitchClasses (int keyPitchClass, int scaleIndex);
 

@@ -101,9 +101,12 @@ int main()
     if (const auto* hero = find ("Hero's cadence"))
     {
         const auto slots = buildLibraryProgression (*hero, 0, 60);
-        expect (names (slots) == "C G# A# C", "hero's cadence: " + names (slots));
+        expect (names (slots) == "C Ab Bb C", "hero's cadence: " + names (slots));
         expect (slots[1].lengthBeats == 2.0 && slots[3].lengthBeats == 8.0, "lengths");
     }
+
+    if (const auto* mixo = find ("Mixolydian rock"))
+        expect (names (buildLibraryProgression (*mixo, 2, 62)) == "D C G D", "Mixolydian rock in D");
 
     if (failures == 0)
         std::cout << "All library tests passed (" << getLibrary().size() << " progressions)\n";

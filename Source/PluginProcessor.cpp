@@ -51,7 +51,7 @@ MadScalerProcessor::MadScalerProcessor()
 juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createParameterLayout()
 {
     juce::StringArray keyNames;
-    for (auto* name : madscaler::getNoteNames())
+    for (auto* name : { "C", "C#/Db", "D", "Eb", "E", "F", "F#/Gb", "G", "Ab", "A", "Bb", "B" })
         keyNames.add (name);
 
     juce::StringArray scaleNames;

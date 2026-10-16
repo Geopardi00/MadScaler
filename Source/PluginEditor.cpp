@@ -84,7 +84,7 @@ namespace madscaler::ui
 
         juce::StringArray noteNames;
         for (auto note : chord.notes)
-            noteNames.add (juce::String (madscaler::getNoteName (note)));
+            noteNames.add (juce::String (madscaler::spellNote (note, processor.getKey(), processor.getScaleIndex())));
 
         g.setColour (Colours::textDim);
         g.setFont (juce::FontOptions (12.0f));
@@ -362,7 +362,7 @@ namespace madscaler::ui
             const auto angle = (float) position * step;
             const auto radius = (from + to) * 0.5f;
             const juce::Point<float> labelCentre { centre.x + radius * std::sin (angle), centre.y - radius * std::cos (angle) };
-            const auto name = madscaler::getNoteName (madscaler::circlePitchClass (position, minor)) + (minor ? "m" : "");
+            const auto name = madscaler::getNoteName (madscaler::circlePitchClass (position, minor), position >= 7) + (minor ? "m" : "");
 
             g.setColour (diatonic || lit ? Colours::text : Colours::textDim);
             g.setFont (juce::FontOptions (minor ? 10.0f : 11.5f, diatonic ? juce::Font::bold : juce::Font::plain));
@@ -434,7 +434,7 @@ namespace madscaler::ui
         if (e.mods.isPopupMenu())
         {
             const auto pitchClass = madscaler::circlePitchClass (position, minor);
-            const auto name = juce::String (madscaler::getNoteName (pitchClass)) + (minor ? " minor" : " major");
+            const auto name = juce::String (madscaler::getNoteName (pitchClass, position >= 7)) + (minor ? " minor" : " major");
             juce::PopupMenu menu;
             menu.addItem ("Set key to " + name, [this, pitchClass, minor] { setKey (pitchClass, minor); });
             menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this));
@@ -1253,7 +1253,7 @@ namespace madscaler::ui
         if (held != lastHeldNotes)
         {
             lastHeldNotes = held;
-            const auto detected = madscaler::detectChord (held);
+            const auto detected = madscaler::detectChord (held, processor.getKey(), processor.getScaleIndex());
 
             if (held.empty())
             {
@@ -1276,7 +1276,7 @@ namespace madscaler::ui
         // A chord goes into the history once it has been held unchanged for a
         // moment, so notes of a chord that are not struck together are not logged.
         if (! pendingName.empty() && ++stableTicks == 6)
-            addToHistory (madscaler::detectChord (held));
+            addToHistory (madscaler::detectChord (held, processor.getKey(), processor.getScaleIndex()));
 
         const auto mask = processor.getActiveDetectedMask();
         for (int i = 0; i < MadScalerProcessor::maxDetectedChords; ++i)
@@ -1597,7 +1597,7 @@ void MadScalerEditor::refreshChords()
 
     juce::StringArray names;
     for (auto pc : madscaler::getScalePitchClasses (processor.getKey(), processor.getScaleIndex()))
-        names.add (madscaler::getNoteName (pc));
+        names.add (madscaler::spellNote (pc, processor.getKey(), processor.getScaleIndex()));
 
     scaleNotesLabel.setText ("Scale notes: " + names.joinIntoString ("  "), juce::dontSendNotification);
     keyboard.repaint();

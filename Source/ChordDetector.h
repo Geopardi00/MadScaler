@@ -19,6 +19,9 @@ namespace madscaler
     // pitch classes; returns an invalid result when nothing matches.
     DetectedChord detectChord (const std::vector<int>& midiNotes);
 
+    // The same, with note names spelled for a key (Eb rather than D# in Bb major).
+    DetectedChord detectChord (const std::vector<int>& midiNotes, int keyPitchClass, int scaleIndex);
+
     struct KeySuggestion
     {
         int keyPitchClass = 0;
