@@ -1,0 +1,170 @@
+#pragma once
+
+#include "ChordDetector.h"
+#include "ChordEngine.h"
+#include "PatternEngine.h"
+#include "Voicing.h"
+
+#include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_audio_utils/juce_audio_utils.h>
+
+#include <array>
+#include <atomic>
+
+// MadScaler makes no sound. It turns chord pad clicks (and, optionally, incoming
+// MIDI keys) into MIDI chords on its MIDI output, which the DAW routes to any synth.
+// It also listens to the MIDI it receives so the editor can name the chords played.
+class MadScalerProcessor : public juce::AudioProcessor
+{
+public:
+    static constexpr int numDegrees = 7;
+    static constexpr int maxDetectedChords = 8;
+    static constexpr int maxChordNotes = 8;
+
+    MadScalerProcessor();
+    ~MadScalerProcessor() override = default;
+
+    void prepareToPlay (double sampleRate, int samplesPerBlock) override;
+    void releaseResources() override;
+    bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
+    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    using AudioProcessor::processBlock;
+
+    juce::AudioProcessorEditor* createEditor() override;
+    bool hasEditor() const override { return true; }
+
+    const juce::String getName() const override { return JucePlugin_Name; }
+    bool acceptsMidi() const override { return true; }
+    bool producesMidi() const override { return true; }
+    bool isMidiEffect() const override { return false; }
+    double getTailLengthSeconds() const override { return 0.0; }
+
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram (int) override {}
+    const juce::String getProgramName (int) override { return {}; }
+    void changeProgramName (int, const juce::String&) override {}
+
+    void getStateInformation (juce::MemoryBlock& destData) override;
+    void setStateInformation (const void* data, int sizeInBytes) override;
+
+    // Called from the editor (message thread) when a chord pad is pressed or released.
+    void setPadPressed (int degree, bool pressed);
+
+    // Called from the editor when a key of the on-screen keyboard is pressed or
+    // released. The note is treated exactly like incoming MIDI.
+    void setKeyboardNotePressed (int midiNote, bool pressed);
+
+    // Called from the editor when a detected chord is pressed or released.
+    void setDetectedChordPressed (int slot, const std::vector<int>& notes, bool pressed);
+
+    // MIDI notes currently held on MadScaler's input (keyboard, DAW track or
+    // on-screen keys), excluding keys used to trigger chords. Safe to call from any thread.
+    std::vector<int> getHeldInputNotes() const;
+
+    // Chord detection history, newest last. Message thread only.
+    std::vector<madscaler::DetectedChord> detectedChords;
+
+    // Chord for a scale degree with the current key, scale, size, octave and
+    // voicing. With voice leading on, previousNotes is the chord it moves from.
+    madscaler::Chord getChordForDegree (int degree, const std::vector<int>& previousNotes = {}) const;
+
+    madscaler::VoicingSettings getVoicingSettings() const;
+
+    int getKey() const;
+    int getScaleIndex() const;
+
+    // Bit n is set while the chord on degree n is sounding (from a pad or a MIDI key).
+    uint32_t getActiveDegreeMask() const { return activeDegreeMask.load(); }
+
+    // Bit n is set while detected chord slot n is sounding.
+    uint32_t getActiveDetectedMask() const { return activeDetectedMask.load(); }
+
+    juce::AudioProcessorValueTreeState parameters;
+
+    // Mirrors the notes MadScaler is sending out, for the on-screen keyboard.
+    juce::MidiKeyboardState outputKeyboardState;
+
+private:
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+    struct HeldChord
+    {
+        bool active = false;
+        int channel = 1;
+        int degree = 0;
+        int numNotes = 0;
+        std::array<int, maxChordNotes> notes {};
+        uint32_t serial = 0; // order of pressing, so the newest chord drives the pattern
+    };
+
+    void startChord (HeldChord& held, int degree, juce::MidiBuffer& out, int samplePos);
+    void startNotes (HeldChord& held, const int* notes, int numNotes, juce::MidiBuffer& out, int samplePos);
+    void stopChord (HeldChord& held, juce::MidiBuffer& out, int samplePos);
+    void stopAllChords (juce::MidiBuffer& out, int samplePos);
+    void updateActiveDegreeMask();
+    void beginPatternBlock (int numSamples, juce::MidiBuffer& out);
+    void syncPattern (int samplePos);
+    void stopPattern (int samplePos);
+    void flushPatternEvents (juce::MidiBuffer& out);
+
+    std::atomic<float>* keyParam = nullptr;
+    std::atomic<float>* scaleParam = nullptr;
+    std::atomic<float>* chordSizeParam = nullptr;
+    std::atomic<float>* octaveParam = nullptr;
+    std::atomic<float>* velocityParam = nullptr;
+    std::atomic<float>* channelParam = nullptr;
+    std::atomic<float>* keyTriggerParam = nullptr;
+    std::atomic<float>* inversionParam = nullptr;
+    std::atomic<float>* voicingParam = nullptr;
+    std::atomic<float>* bassParam = nullptr;
+    std::atomic<float>* voiceLeadingParam = nullptr;
+    std::atomic<float>* patternParam = nullptr;
+    std::atomic<float>* rateParam = nullptr;
+    std::atomic<float>* gateParam = nullptr;
+    std::atomic<float>* arpOctavesParam = nullptr;
+    std::atomic<float>* strumParam = nullptr;
+
+    // Clicks in the editor travel from the message thread to the audio thread
+    // through a lock-free single-producer single-consumer queue.
+    struct UiEvent
+    {
+        enum class Kind { pad, keyboardNote, detectedChord };
+
+        Kind kind = Kind::pad;
+        int index = 0; // degree, MIDI note or detected chord slot
+        bool pressed = false;
+        int numNotes = 0;
+        std::array<int, maxChordNotes> notes {};
+    };
+
+    void pushUiEvent (const UiEvent& event);
+    void setHeldInputNote (int midiNote, bool held);
+
+    juce::AbstractFifo uiFifo { 256 };
+    std::array<UiEvent, 256> uiEvents {};
+
+    std::array<HeldChord, numDegrees> padChords {};
+    std::array<HeldChord, maxDetectedChords> detectedChordsHeld {};
+    std::array<HeldChord, 128> keyChords {}; // indexed by the incoming MIDI note
+    std::array<std::array<int, 128>, 16> noteRefCount {};
+    std::atomic<uint32_t> activeDegreeMask { 0 };
+    std::atomic<uint32_t> activeDetectedMask { 0 };
+    std::array<std::atomic<uint32_t>, 4> heldInputNotes {}; // 128 bits, one per MIDI note
+    juce::MidiBuffer outputMidi;
+    std::vector<int> lastChordNotes; // audio thread only, for voice leading
+    bool needsAllNotesOff = false;
+
+    // Patterns (audio thread only). With a pattern selected, held chords do not
+    // sound directly: the newest one is handed to the pattern engine instead.
+    madscaler::PatternEngine patternEngine;
+    std::vector<madscaler::PatternEvent> patternEvents;
+    bool patternActive = false;
+    int lastPatternChoice = -1;
+    int patternChannel = 1;
+    uint32_t chordSerialCounter = 0;
+    uint32_t patternSerial = 0;
+    double currentSampleRate = 44100.0;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MadScalerProcessor)
+};
