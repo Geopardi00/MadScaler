@@ -178,6 +178,33 @@ int main()
     runBlock (processor);
     setParam (processor, "bass", 0.0f);
 
+    // Patterns: Arp Up at the default 1/16 and 120 bpm (no host), 48 kHz, so one
+    // step is 6000 samples. The first note plays at once, the next a step later.
+    setParam (processor, "pattern", 3.0f); // Arp Up
+    runBlock (processor);
+    processor.setPadPressed (0, true);
+    std::vector<Note> patternNotes;
+    for (int block = 0; block < 30; ++block) // 7680 samples
+        for (const auto& note : runBlock (processor))
+            patternNotes.push_back (note);
+    expect (hasNotes (patternNotes, true, { 60, 64 }), "arp plays the chord one note at a time");
+    processor.setPadPressed (0, false);
+    notes = runBlock (processor);
+    std::vector<Note> afterRelease;
+    for (int block = 0; block < 30; ++block)
+        for (const auto& note : runBlock (processor))
+            afterRelease.push_back (note);
+    expect (hasNotes (afterRelease, true, {}), "arp stops when the pad is released");
+
+    // Switching back to no pattern while nothing is held leaves nothing hanging.
+    setParam (processor, "pattern", 0.0f);
+    runBlock (processor);
+    processor.setPadPressed (1, true);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, true, { 62, 65, 69 }), "with patterns off, the chord sounds at once");
+    processor.setPadPressed (1, false);
+    runBlock (processor);
+
     // State round trip.
     setParam (processor, "scale", 1.0f);
     juce::MemoryBlock state;

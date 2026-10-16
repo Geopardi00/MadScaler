@@ -413,6 +413,11 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     setUpLabel (channelLabel, "MIDI Ch");
     setUpLabel (inversionLabel, "Inversion");
     setUpLabel (voicingLabel, "Voicing");
+    setUpLabel (patternLabel, "Pattern");
+    setUpLabel (rateLabel, "Rate");
+    setUpLabel (gateLabel, "Gate %");
+    setUpLabel (arpOctavesLabel, "Arp Octaves");
+    setUpLabel (strumLabel, "Strum ms");
 
     auto setUpCombo = [this] (juce::ComboBox& box, const juce::String& paramID,
                               std::unique_ptr<ComboAttachment>& attachment)
@@ -428,6 +433,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     setUpCombo (sizeBox, "chordSize", sizeAttachment);
     setUpCombo (inversionBox, "inversion", inversionAttachment);
     setUpCombo (voicingBox, "voicing", voicingAttachment);
+    setUpCombo (patternBox, "pattern", patternAttachment);
+    setUpCombo (rateBox, "rate", rateAttachment);
 
     auto setUpSlider = [this] (juce::Slider& slider, const juce::String& paramID,
                                std::unique_ptr<SliderAttachment>& attachment)
@@ -441,6 +448,15 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     setUpSlider (octaveSlider, "octave", octaveAttachment);
     setUpSlider (velocitySlider, "velocity", velocityAttachment);
     setUpSlider (channelSlider, "channel", channelAttachment);
+    setUpSlider (arpOctavesSlider, "arpOctaves", arpOctavesAttachment);
+    setUpSlider (strumSlider, "strum", strumAttachment);
+
+    gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    gateSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 40, 24);
+    gateSlider.setColour (juce::Slider::thumbColourId, Colours::accent);
+    gateSlider.setColour (juce::Slider::trackColourId, Colours::padLit.withAlpha (0.6f));
+    addAndMakeVisible (gateSlider);
+    gateAttachment = std::make_unique<SliderAttachment> (processor.parameters, "gate", gateSlider);
 
     keyTriggerButton.setColour (juce::ToggleButton::textColourId, Colours::textDim);
     addAndMakeVisible (keyTriggerButton);
@@ -470,8 +486,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (keyboard);
 
     setResizable (true, true);
-    setResizeLimits (760, 580, 1600, 1100);
-    setSize (860, 640);
+    setResizeLimits (760, 640, 1600, 1200);
+    setSize (860, 700);
     startTimerHz (30);
 }
 
@@ -528,6 +544,13 @@ void MadScalerEditor::resized()
     auto toggles = controls.removeFromBottom (28);
     bassButton.setBounds (toggles.removeFromLeft (110));
     voiceLeadingButton.setBounds (toggles.removeFromLeft (140));
+
+    controls = area.removeFromTop (52);
+    place (patternLabel, patternBox, 130);
+    place (rateLabel, rateBox, 80);
+    place (gateLabel, gateSlider, 160);
+    place (arpOctavesLabel, arpOctavesSlider, 100);
+    place (strumLabel, strumSlider, 100);
 
     auto secondRow = area.removeFromTop (30);
     scaleNotesLabel.setBounds (secondRow.removeFromLeft (secondRow.getWidth() / 2));

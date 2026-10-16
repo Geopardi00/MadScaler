@@ -133,15 +133,19 @@ private:
 
     juce::Label keyLabel, scaleLabel, sizeLabel, octaveLabel, velocityLabel, channelLabel;
     juce::Label inversionLabel, voicingLabel;
-    juce::ComboBox keyBox, scaleBox, sizeBox, inversionBox, voicingBox;
+    juce::Label patternLabel, rateLabel, gateLabel, arpOctavesLabel, strumLabel;
+    juce::ComboBox keyBox, scaleBox, sizeBox, inversionBox, voicingBox, patternBox, rateBox;
+    juce::Slider gateSlider, arpOctavesSlider, strumSlider;
     juce::ToggleButton bassButton { "Bass note" };
     juce::ToggleButton voiceLeadingButton { "Voice leading" };
     juce::Slider octaveSlider, velocitySlider, channelSlider;
     juce::ToggleButton keyTriggerButton { "Play chords from MIDI keys (C-B = I-VII)" };
     juce::Label scaleNotesLabel;
 
-    std::unique_ptr<ComboAttachment> keyAttachment, scaleAttachment, sizeAttachment, inversionAttachment, voicingAttachment;
-    std::unique_ptr<SliderAttachment> octaveAttachment, velocityAttachment, channelAttachment;
+    std::unique_ptr<ComboAttachment> keyAttachment, scaleAttachment, sizeAttachment, inversionAttachment, voicingAttachment,
+                                     patternAttachment, rateAttachment;
+    std::unique_ptr<SliderAttachment> octaveAttachment, velocityAttachment, channelAttachment,
+                                      gateAttachment, arpOctavesAttachment, strumAttachment;
     std::unique_ptr<ButtonAttachment> keyTriggerAttachment, bassAttachment, voiceLeadingAttachment;
 
     std::array<std::unique_ptr<madscaler::ui::ChordPad>, MadScalerProcessor::numDegrees> pads;

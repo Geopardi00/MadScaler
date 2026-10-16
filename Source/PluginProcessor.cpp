@@ -14,6 +14,11 @@ namespace ParamIDs
     static const juce::String voicing { "voicing" };
     static const juce::String bass { "bass" };
     static const juce::String voiceLeading { "voiceLeading" };
+    static const juce::String pattern { "pattern" };
+    static const juce::String rate { "rate" };
+    static const juce::String gate { "gate" };
+    static const juce::String arpOctaves { "arpOctaves" };
+    static const juce::String strum { "strum" };
 }
 
 MadScalerProcessor::MadScalerProcessor()
@@ -31,6 +36,11 @@ MadScalerProcessor::MadScalerProcessor()
     voicingParam = parameters.getRawParameterValue (ParamIDs::voicing);
     bassParam = parameters.getRawParameterValue (ParamIDs::bass);
     voiceLeadingParam = parameters.getRawParameterValue (ParamIDs::voiceLeading);
+    patternParam = parameters.getRawParameterValue (ParamIDs::pattern);
+    rateParam = parameters.getRawParameterValue (ParamIDs::rate);
+    gateParam = parameters.getRawParameterValue (ParamIDs::gate);
+    arpOctavesParam = parameters.getRawParameterValue (ParamIDs::arpOctaves);
+    strumParam = parameters.getRawParameterValue (ParamIDs::strum);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createParameterLayout()
@@ -59,11 +69,25 @@ juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createPa
                                                         StringArray { "Close", "Open", "Drop 2", "Drop 3" }, 0));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::bass, 1 }, "Bass Note", false));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::voiceLeading, 1 }, "Voice Leading", false));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::pattern, 1 }, "Pattern",
+                                                        StringArray { "Off", "Strum Up", "Strum Down", "Arp Up", "Arp Down",
+                                                                      "Arp Up/Down", "Arp Random", "Pulse" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::rate, 1 }, "Rate",
+                                                        StringArray { "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" }, 3));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::gate, 1 }, "Gate",
+                                                       NormalisableRange<float> (10.0f, 100.0f, 1.0f), 80.0f,
+                                                       AudioParameterFloatAttributes().withLabel ("%")));
+    layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::arpOctaves, 1 }, "Arp Octaves", 1, 3, 1));
+    layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::strum, 1 }, "Strum Time", 5, 150, 30,
+                                                     AudioParameterIntAttributes().withLabel ("ms")));
     return layout;
 }
 
-void MadScalerProcessor::prepareToPlay (double, int)
+void MadScalerProcessor::prepareToPlay (double sampleRate, int)
 {
+    currentSampleRate = sampleRate;
+    patternEngine.reset();
+    patternEvents.reserve (1024);
     lastChordNotes.reserve (maxChordNotes);
     outputMidi.ensureSize (2048);
     outputKeyboardState.reset();
@@ -204,12 +228,16 @@ void MadScalerProcessor::startNotes (HeldChord& held, const int* notes, int numN
     held.active = true;
     held.channel = channel;
     held.degree = 0;
+    held.serial = ++chordSerialCounter;
     held.numNotes = juce::jmin (numNotes, (int) held.notes.size());
 
     for (int i = 0; i < held.numNotes; ++i)
     {
         const auto note = notes[i];
         held.notes[(size_t) i] = note;
+
+        if (patternActive)
+            continue; // the pattern engine plays it
 
         auto& count = noteRefCount[(size_t) channel - 1][(size_t) note];
         if (count++ == 0)
@@ -222,6 +250,11 @@ void MadScalerProcessor::stopChord (HeldChord& held, juce::MidiBuffer& out, int 
     if (! held.active)
         return;
 
+    held.active = false;
+
+    if (patternActive)
+        return; // nothing was sent directly; the pattern engine follows on syncPattern
+
     for (int i = 0; i < held.numNotes; ++i)
     {
         const auto note = held.notes[(size_t) i];
@@ -229,8 +262,6 @@ void MadScalerProcessor::stopChord (HeldChord& held, juce::MidiBuffer& out, int 
         if (count > 0 && --count == 0)
             out.addEvent (juce::MidiMessage::noteOff (held.channel, note), samplePos);
     }
-
-    held.active = false;
 }
 
 void MadScalerProcessor::stopAllChords (juce::MidiBuffer& out, int samplePos)
@@ -261,6 +292,106 @@ void MadScalerProcessor::updateActiveDegreeMask()
     activeDetectedMask.store (detectedMask);
 }
 
+void MadScalerProcessor::beginPatternBlock (int numSamples, juce::MidiBuffer& out)
+{
+    const auto choice = juce::jlimit (0, 7, (int) patternParam->load());
+
+    if (choice != lastPatternChoice)
+    {
+        // Switching between direct chords and patterns (or between patterns):
+        // release everything so no note is left hanging, then start clean.
+        stopAllChords (out, 0);
+        stopPattern (0);
+        flushPatternEvents (out);
+        patternActive = choice != 0;
+        lastPatternChoice = choice;
+    }
+
+    if (! patternActive)
+        return;
+
+    static constexpr double rateBeats[] = { 1.0, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125 };
+
+    madscaler::PatternSettings settings;
+    settings.mode = (madscaler::PatternMode) (choice - 1);
+    settings.stepBeats = rateBeats[juce::jlimit (0, 5, (int) rateParam->load())];
+    settings.gate = gateParam->load() / 100.0f;
+    settings.octaves = juce::jlimit (1, 3, (int) arpOctavesParam->load());
+    settings.strumMs = strumParam->load();
+    settings.velocity = juce::jlimit (1, 127, (int) velocityParam->load());
+    patternEngine.setSettings (settings);
+
+    double bpm = 120.0, ppq = 0.0;
+    bool playing = false;
+
+    if (auto* hostPlayHead = getPlayHead())
+    {
+        if (const auto position = hostPlayHead->getPosition())
+        {
+            if (const auto hostBpm = position->getBpm())
+                bpm = *hostBpm;
+            if (const auto hostPpq = position->getPpqPosition())
+            {
+                ppq = *hostPpq;
+                playing = position->getIsPlaying();
+            }
+        }
+    }
+
+    juce::ignoreUnused (numSamples);
+    patternEngine.beginBlock (currentSampleRate, bpm, playing, ppq);
+}
+
+void MadScalerProcessor::syncPattern (int samplePos)
+{
+    if (! patternActive)
+        return;
+
+    // The newest held chord drives the pattern.
+    const HeldChord* newest = nullptr;
+    auto consider = [&newest] (const HeldChord& held)
+    {
+        if (held.active && (newest == nullptr || held.serial > newest->serial))
+            newest = &held;
+    };
+
+    for (const auto& held : padChords)          consider (held);
+    for (const auto& held : keyChords)          consider (held);
+    for (const auto& held : detectedChordsHeld) consider (held);
+
+    const auto serial = newest != nullptr ? newest->serial : 0u;
+    if (serial == patternSerial)
+        return;
+
+    patternSerial = serial;
+
+    if (newest != nullptr)
+    {
+        if (! patternEngine.isSounding())
+            patternChannel = newest->channel;
+        patternEngine.setChord (newest->notes.data(), newest->numNotes, samplePos, patternEvents);
+    }
+    else
+    {
+        patternEngine.setChord (nullptr, 0, samplePos, patternEvents);
+    }
+}
+
+void MadScalerProcessor::stopPattern (int samplePos)
+{
+    patternEngine.allNotesOff (samplePos, patternEvents);
+    patternSerial = 0;
+}
+
+void MadScalerProcessor::flushPatternEvents (juce::MidiBuffer& out)
+{
+    for (const auto& event : patternEvents)
+        out.addEvent (event.noteOn ? juce::MidiMessage::noteOn (patternChannel, event.note, (juce::uint8) event.velocity)
+                                   : juce::MidiMessage::noteOff (patternChannel, event.note),
+                      event.sampleOffset);
+    patternEvents.clear();
+}
+
 // Maps a white key to a scale degree: C plays degree 1, D degree 2 ... B degree 7.
 static int degreeForWhiteKey (int midiNote)
 {
@@ -287,9 +418,13 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     auto& out = outputMidi;
     out.clear();
 
+    patternEvents.clear();
+    beginPatternBlock (buffer.getNumSamples(), out);
+
     if (needsAllNotesOff)
     {
         stopAllChords (out, 0);
+        stopPattern (0);
         for (auto& word : heldInputNotes)
             word.store (0);
         needsAllNotesOff = false;
@@ -316,6 +451,7 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                             startChord (held, event.index, out, 0);
                         else
                             stopChord (held, out, 0);
+                        syncPattern (0);
                         break;
                     }
 
@@ -326,6 +462,7 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                             startNotes (held, event.notes.data(), event.numNotes, out, 0);
                         else
                             stopChord (held, out, 0);
+                        syncPattern (0);
                         break;
                     }
 
@@ -360,6 +497,7 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                     startChord (held, degree, out, pos);
                 else
                     stopChord (held, out, pos);
+                syncPattern (pos);
                 continue;
             }
         }
@@ -373,12 +511,17 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         if (message.isAllNotesOff() || message.isAllSoundOff())
         {
             stopAllChords (out, pos);
+            stopPattern (pos);
             for (auto& word : heldInputNotes)
                 word.store (0);
         }
 
         out.addEvent (message, pos);
     }
+
+    if (patternActive)
+        patternEngine.endBlock (buffer.getNumSamples(), patternEvents);
+    flushPatternEvents (out);
 
     midi.swapWith (out);
     outputKeyboardState.processNextMidiBuffer (midi, 0, buffer.getNumSamples(), false);

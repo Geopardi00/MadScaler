@@ -2,6 +2,7 @@
 
 #include "ChordDetector.h"
 #include "ChordEngine.h"
+#include "PatternEngine.h"
 #include "Voicing.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -94,6 +95,7 @@ private:
         int degree = 0;
         int numNotes = 0;
         std::array<int, maxChordNotes> notes {};
+        uint32_t serial = 0; // order of pressing, so the newest chord drives the pattern
     };
 
     void startChord (HeldChord& held, int degree, juce::MidiBuffer& out, int samplePos);
@@ -101,6 +103,10 @@ private:
     void stopChord (HeldChord& held, juce::MidiBuffer& out, int samplePos);
     void stopAllChords (juce::MidiBuffer& out, int samplePos);
     void updateActiveDegreeMask();
+    void beginPatternBlock (int numSamples, juce::MidiBuffer& out);
+    void syncPattern (int samplePos);
+    void stopPattern (int samplePos);
+    void flushPatternEvents (juce::MidiBuffer& out);
 
     std::atomic<float>* keyParam = nullptr;
     std::atomic<float>* scaleParam = nullptr;
@@ -113,6 +119,11 @@ private:
     std::atomic<float>* voicingParam = nullptr;
     std::atomic<float>* bassParam = nullptr;
     std::atomic<float>* voiceLeadingParam = nullptr;
+    std::atomic<float>* patternParam = nullptr;
+    std::atomic<float>* rateParam = nullptr;
+    std::atomic<float>* gateParam = nullptr;
+    std::atomic<float>* arpOctavesParam = nullptr;
+    std::atomic<float>* strumParam = nullptr;
 
     // Clicks in the editor travel from the message thread to the audio thread
     // through a lock-free single-producer single-consumer queue.
@@ -143,6 +154,17 @@ private:
     juce::MidiBuffer outputMidi;
     std::vector<int> lastChordNotes; // audio thread only, for voice leading
     bool needsAllNotesOff = false;
+
+    // Patterns (audio thread only). With a pattern selected, held chords do not
+    // sound directly: the newest one is handed to the pattern engine instead.
+    madscaler::PatternEngine patternEngine;
+    std::vector<madscaler::PatternEvent> patternEvents;
+    bool patternActive = false;
+    int lastPatternChoice = -1;
+    int patternChannel = 1;
+    uint32_t chordSerialCounter = 0;
+    uint32_t patternSerial = 0;
+    double currentSampleRate = 44100.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MadScalerProcessor)
 };
