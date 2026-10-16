@@ -3,6 +3,7 @@
 #include "ChordColours.h"
 #include "ChordDetector.h"
 #include "ChordLibrary.h"
+#include "MelodyMaker.h"
 #include "ChordEngine.h"
 #include "PatternEngine.h"
 #include "Progression.h"
@@ -83,6 +84,26 @@ public:
     // current voicing and always voice-led so the chords flow smoothly.
     madscaler::Progression buildFromLibrary (const madscaler::LibraryProgression& entry) const;
 
+    // MelodyMaker: the chords sent to it, its settings and the melody it made.
+    // Message thread only; change the melody through setMelodyState so the
+    // audio thread gets a copy.
+    struct MelodyState
+    {
+        std::vector<madscaler::ProgressionSlot> chords;
+        madscaler::MelodySettings settings;
+        std::vector<madscaler::TimedNote> notes;
+        double totalBeats = 0.0;
+    };
+
+    const MelodyState& getMelodyState() const { return melodyState; }
+    void setMelodyState (const MelodyState& newState);
+    // Goes up on every setMelodyState, so the editor can notice a state load.
+    int getMelodyStateVersion() const { return melodyStateVersion; }
+
+    // While on, the melody plays along with the progression on the melody channel.
+    void setMelodyPlaying (bool shouldPlay) { melodyPlaying.store (shouldPlay); }
+    bool isMelodyPlaying() const { return melodyPlaying.load(); }
+
     // MIDI notes currently held on MadScaler's input (keyboard, DAW track or
     // on-screen keys), excluding keys used to trigger chords. Safe to call from any thread.
     std::vector<int> getHeldInputNotes() const;
@@ -151,6 +172,8 @@ private:
     void flushPatternEvents (juce::MidiBuffer& out);
     void readPlayHead();
     void playProgression (int numSamples, juce::MidiBuffer& out);
+    void playMelody (double startBeat, double endBeat, double beatsPerSample, int numSamples, juce::MidiBuffer& out);
+    void stopMelodyNotes (juce::MidiBuffer& out, int samplePos);
     int applyKeysLock (const juce::MidiMessage& message, juce::MidiMessage& result);
 
     std::atomic<float>* keyParam = nullptr;
@@ -170,6 +193,7 @@ private:
     std::atomic<float>* arpOctavesParam = nullptr;
     std::atomic<float>* strumParam = nullptr;
     std::atomic<float>* keysLockParam = nullptr;
+    std::atomic<float>* melodyChannelParam = nullptr;
 
     // Clicks in the editor travel from the message thread to the audio thread
     // through a lock-free single-producer single-consumer queue.
@@ -252,6 +276,37 @@ private:
     int playingSlot = -1;
     std::array<HeldChord, 2> progressionHeld {};
     int progressionHolder = 0;
+
+    // Melody playback, swapped in like the progression snapshot.
+    struct MelodySnapshot
+    {
+        static constexpr int maxNotes = 512;
+
+        struct Note
+        {
+            double start = 0.0, length = 0.0;
+            int note = 60, velocity = 100;
+        };
+
+        int numNotes = 0;
+        std::array<Note, maxNotes> notes {};
+        double totalBeats = 0.0;
+    };
+
+    struct ActiveMelodyNote
+    {
+        int note = 0, channel = 1;
+        double endBeat = 0.0;
+    };
+
+    MelodyState melodyState;
+    int melodyStateVersion = 0;
+    MelodySnapshot pendingMelody, audioMelody;
+    std::atomic<bool> melodyChanged { false };
+    std::atomic<bool> melodyPlaying { true };
+    std::array<ActiveMelodyNote, 32> activeMelodyNotes {};
+    int numActiveMelodyNotes = 0;
+    double lastMelodyEndBeat = -1.0;
 
     // Keys Lock: the scale note each held input note was moved to, per channel.
     std::array<std::array<int8_t, 128>, 16> keysLockMap {};

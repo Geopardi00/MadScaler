@@ -287,6 +287,51 @@ int main()
                 "progression survives a save and reload");
     }
 
+    // MelodyMaker: the melody plays along with the progression on its own channel.
+    {
+        madscaler::Progression progression;
+        progression.slots.push_back ({ "C", { 60, 64, 67 }, 4.0 });
+        processor.setProgression (progression);
+
+        MadScalerProcessor::MelodyState melody;
+        melody.chords = progression.slots;
+        melody.notes = { { 0.0, 1.0, 72, 100 }, { 1.0, 1.0, 74, 100 }, { 2.0, 2.0, 76, 90 } };
+        melody.totalBeats = 4.0;
+        processor.setMelodyState (melody);
+        processor.setMelodyPlaying (true);
+        processor.setProgressionPlaying (true);
+
+        std::vector<Note> played;
+        for (int block = 0; block < 370; ++block)
+            for (const auto& note : runBlock (processor))
+                played.push_back (note);
+
+        std::vector<Note> melodyNotes;
+        for (const auto& note : played)
+            if (note.channel == 2)
+                melodyNotes.push_back (note);
+
+        expect (hasNotes (melodyNotes, true, { 72, 74, 76 }), "melody plays on channel 2");
+        expect (hasNotes (melodyNotes, false, { 72, 74 }), "melody notes end on time");
+        expect (hasNotes (played, true, { 60, 64, 67, 72, 74, 76 }), "chords and melody together");
+
+        processor.setProgressionPlaying (false);
+        notes = runBlock (processor);
+        expect (hasNotes (notes, false, { 76, 60, 64, 67 }) || hasNotes (notes, false, { 60, 64, 67, 76 }),
+                "stopping releases the melody too");
+
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        const auto& restoredMelody = reloaded.getMelodyState();
+        expect (restoredMelody.notes.size() == 3 && restoredMelody.notes[2].note == 76
+                    && std::abs (restoredMelody.notes[2].lengthBeats - 2.0) < 1.0e-9 && restoredMelody.chords.size() == 1
+                    && std::abs (restoredMelody.totalBeats - 4.0) < 1.0e-9,
+                "melody survives a save and reload");
+        processor.setProgression ({});
+    }
+
     // State round trip.
     setParam (processor, "scale", 1.0f);
     juce::MemoryBlock state;

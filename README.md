@@ -8,7 +8,7 @@ them to any synth in your DAW: MadScaler has no sounds of its own.
 This is an independent project. It is not affiliated with, and contains no
 code, presets or assets from, any commercial chord plugin.
 
-## Features (v0.7)
+## Features (v0.8)
 
 - Key picker (all 12 keys) and 11 seven-note scales: Major, Natural/Harmonic/
   Melodic Minor, the modes, Harmonic Major and Phrygian Dominant.
@@ -59,9 +59,20 @@ code, presets or assets from, any commercial chord plugin.
   press a pad, colour, Circle of Fifths or detected chord to replace it
   (the length stays). Right-click a chord for "Replace with" the scale's
   chords, length, move, duplicate and delete. Then Drag MIDI into your DAW.
-- Settings and the progression are saved with your DAW project.
+- MelodyMaker: press "To Melody" on the progression (or "Get chords" in the
+  Melody tab) and MadScaler lists the scales that fit those chords, best
+  first, including pentatonic and blues scales. Pick a scale and it invents a
+  melody over the chords: chord notes on the strong beats, scale steps in
+  between, ending on the last chord's root. Switch to Arpeggio to play the
+  chord notes one at a time (up, down, up-down, Alberti, pinky or random).
+  Both follow one of 14 rhythms (straight eighths, triplets, tresillo,
+  gallop, offbeats, pop hooks and more), in a low, middle or high register.
+  "New melody" invents another one. With "Play along" on, the melody plays
+  with the progression on its own MIDI channel (2 by default), so it can go
+  to a different synth. "Drag melody" or "Export" saves it as MIDI.
+- Settings, the progression and the melody are saved with your DAW project.
 
-Next up: motions (basslines and melodies).
+Next up: basslines, swing and polish.
 
 ## Download
 
@@ -96,7 +107,9 @@ The VST3 ends up in `build/MadScaler_artefacts/Release/VST3/`.
 - `Source/Progression.*` chord progressions and their MIDI rendering.
 - `Source/ChordColours.*` extensions, borrowed and secondary chords, next-chord hints.
 - `Source/ChordLibrary.*` the progression library and its Roman numeral parser.
+- `Source/MelodyMaker.*` scale suggestions for chords, rhythm patterns,
+  melodies and arpeggios.
 - `Source/PluginProcessor.*` turns pad presses and MIDI input into MIDI chords.
 - `Source/PluginEditor.*` the user interface.
 - `tests/` unit tests for the theory code, chord detection, voicings,
-  patterns, progressions, chord colours, the library and the processor's MIDI output.
+  patterns, progressions, chord colours, the library, MelodyMaker and the processor's MIDI output.
