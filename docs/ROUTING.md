@@ -13,6 +13,10 @@ Two settings matter in every DAW:
   the chord grid (C = I, D = ii, ... B = vii in any octave) and black keys
   still pass through.
 
+- **Chord detection** listens to the MIDI coming into MadScaler. In most DAWs
+  that means arming (or monitoring) MadScaler's track so your keyboard reaches
+  it, or putting a MIDI clip on that track.
+
 ## REAPER (simplest)
 
 Put both plugins in one track's FX chain, MadScaler first:

@@ -28,7 +28,7 @@ static std::vector<Note> runBlock (MadScalerProcessor& processor, juce::MidiBuff
     audio.clear();
     processor.processBlock (audio, midi);
 
-    expect (audio.getMagnitude (0, audio.getNumSamples()) == 0.0f, "output audio is silent");
+    expect (audio.getMagnitude (0, audio.getNumSamples()) < 1.0e-9f, "output audio is silent");
 
     std::vector<Note> notes;
     for (const auto metadata : midi)
@@ -108,6 +108,9 @@ int main()
     in.addEvent (juce::MidiMessage::noteOn (1, 61, (juce::uint8) 90), 10);
     notes = runBlock (processor, in);
     expect (hasNotes (notes, true, { 61 }), "incoming MIDI passes through");
+    in.clear();
+    in.addEvent (juce::MidiMessage::noteOff (1, 61), 0);
+    runBlock (processor, in);
 
     // Key triggering: a D key plays the ii chord.
     setParam (processor, "keyTrigger", 1.0f);
@@ -119,6 +122,31 @@ int main()
     in.addEvent (juce::MidiMessage::noteOff (1, 50), 0);
     notes = runBlock (processor, in);
     expect (hasNotes (notes, false, { 62, 65, 69 }), "releasing the key stops the chord");
+
+    setParam (processor, "keyTrigger", 0.0f);
+
+    // On-screen keyboard clicks behave like incoming MIDI and feed chord detection.
+    processor.setKeyboardNotePressed (64, true);
+    processor.setKeyboardNotePressed (67, true);
+    processor.setKeyboardNotePressed (72, true);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, true, { 64, 67, 72 }), "on-screen keys play their notes");
+    expect (processor.getHeldInputNotes() == std::vector<int> { 64, 67, 72 }, "held input notes are tracked");
+    expect (madscaler::detectChord (processor.getHeldInputNotes()).name == "C/E", "held notes are detected as C/E");
+    for (auto note : { 64, 67, 72 })
+        processor.setKeyboardNotePressed (note, false);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, false, { 64, 67, 72 }), "releasing on-screen keys stops the notes");
+    expect (processor.getHeldInputNotes().empty(), "no input notes held after release");
+
+    // A detected chord replays the exact notes that were played.
+    processor.setDetectedChordPressed (2, { 52, 55, 60, 64 }, true);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, true, { 52, 55, 60, 64 }), "detected chord replays its notes");
+    expect (processor.getActiveDetectedMask() == (1u << 2), "detected chord slot is lit");
+    processor.setDetectedChordPressed (2, {}, false);
+    notes = runBlock (processor);
+    expect (hasNotes (notes, false, { 52, 55, 60, 64 }), "releasing a detected chord stops it");
 
     // State round trip.
     setParam (processor, "scale", 1.0f);

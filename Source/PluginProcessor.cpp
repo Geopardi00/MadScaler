@@ -86,37 +86,101 @@ madscaler::Chord MadScalerProcessor::getChordForDegree (int degree) const
     return madscaler::buildDiatonicChord (key, getScaleIndex(), degree, size, 12 * (octave + 1) + key);
 }
 
+void MadScalerProcessor::pushUiEvent (const UiEvent& event)
+{
+    const auto scope = uiFifo.write (1);
+    if (scope.blockSize1 > 0)
+        uiEvents[(size_t) scope.startIndex1] = event;
+    else if (scope.blockSize2 > 0)
+        uiEvents[(size_t) scope.startIndex2] = event;
+}
+
 void MadScalerProcessor::setPadPressed (int degree, bool pressed)
 {
     if (! juce::isPositiveAndBelow (degree, numDegrees))
         return;
 
-    const auto scope = padFifo.write (1);
-    if (scope.blockSize1 > 0)
-        padEvents[(size_t) scope.startIndex1] = { degree, pressed };
-    else if (scope.blockSize2 > 0)
-        padEvents[(size_t) scope.startIndex2] = { degree, pressed };
+    UiEvent event;
+    event.kind = UiEvent::Kind::pad;
+    event.index = degree;
+    event.pressed = pressed;
+    pushUiEvent (event);
+}
+
+void MadScalerProcessor::setKeyboardNotePressed (int midiNote, bool pressed)
+{
+    if (! juce::isPositiveAndBelow (midiNote, 128))
+        return;
+
+    UiEvent event;
+    event.kind = UiEvent::Kind::keyboardNote;
+    event.index = midiNote;
+    event.pressed = pressed;
+    pushUiEvent (event);
+}
+
+void MadScalerProcessor::setDetectedChordPressed (int slot, const std::vector<int>& notes, bool pressed)
+{
+    if (! juce::isPositiveAndBelow (slot, maxDetectedChords))
+        return;
+
+    UiEvent event;
+    event.kind = UiEvent::Kind::detectedChord;
+    event.index = slot;
+    event.pressed = pressed;
+    event.numNotes = juce::jmin ((int) notes.size(), maxChordNotes);
+    for (int i = 0; i < event.numNotes; ++i)
+        event.notes[(size_t) i] = juce::jlimit (0, 127, notes[(size_t) i]);
+    pushUiEvent (event);
+}
+
+void MadScalerProcessor::setHeldInputNote (int midiNote, bool held)
+{
+    if (! juce::isPositiveAndBelow (midiNote, 128))
+        return;
+
+    auto& word = heldInputNotes[(size_t) midiNote / 32];
+    const auto bit = 1u << (midiNote % 32);
+    if (held)
+        word.fetch_or (bit);
+    else
+        word.fetch_and (~bit);
+}
+
+std::vector<int> MadScalerProcessor::getHeldInputNotes() const
+{
+    std::vector<int> notes;
+    for (int note = 0; note < 128; ++note)
+        if ((heldInputNotes[(size_t) note / 32].load() >> (note % 32)) & 1u)
+            notes.push_back (note);
+    return notes;
 }
 
 void MadScalerProcessor::startChord (HeldChord& held, int degree, juce::MidiBuffer& out, int samplePos)
 {
-    if (held.active)
-        stopChord (held, out, samplePos);
-
     // Building a chord allocates a little; chords are tiny and this only runs on
     // pad presses and key presses, not every block.
     const auto chord = getChordForDegree (degree);
+    startNotes (held, chord.notes.data(), (int) chord.notes.size(), out, samplePos);
+    held.degree = degree;
+}
+
+void MadScalerProcessor::startNotes (HeldChord& held, const int* notes, int numNotes, juce::MidiBuffer& out, int samplePos)
+{
+    if (held.active)
+        stopChord (held, out, samplePos);
+
     const auto channel = juce::jlimit (1, 16, (int) channelParam->load());
     const auto velocity = (juce::uint8) juce::jlimit (1, 127, (int) velocityParam->load());
 
     held.active = true;
     held.channel = channel;
-    held.degree = degree;
-    held.numNotes = juce::jmin ((int) chord.notes.size(), (int) held.notes.size());
+    held.degree = 0;
+    held.numNotes = juce::jmin (numNotes, (int) held.notes.size());
 
     for (int i = 0; i < held.numNotes; ++i)
     {
-        const auto note = chord.notes[(size_t) i];
+        const auto note = notes[i];
         held.notes[(size_t) i] = note;
 
         auto& count = noteRefCount[(size_t) channel - 1][(size_t) note];
@@ -147,6 +211,8 @@ void MadScalerProcessor::stopAllChords (juce::MidiBuffer& out, int samplePos)
         stopChord (held, out, samplePos);
     for (auto& held : keyChords)
         stopChord (held, out, samplePos);
+    for (auto& held : detectedChordsHeld)
+        stopChord (held, out, samplePos);
 }
 
 void MadScalerProcessor::updateActiveDegreeMask()
@@ -159,6 +225,12 @@ void MadScalerProcessor::updateActiveDegreeMask()
         if (held.active)
             mask |= 1u << held.degree;
     activeDegreeMask.store (mask);
+
+    uint32_t detectedMask = 0;
+    for (size_t i = 0; i < detectedChordsHeld.size(); ++i)
+        if (detectedChordsHeld[i].active)
+            detectedMask |= 1u << i;
+    activeDetectedMask.store (detectedMask);
 }
 
 // Maps a white key to a scale degree: C plays degree 1, D degree 2 ... B degree 7.
@@ -190,24 +262,51 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     if (needsAllNotesOff)
     {
         stopAllChords (out, 0);
+        for (auto& word : heldInputNotes)
+            word.store (0);
         needsAllNotesOff = false;
     }
 
-    // Pad presses from the editor.
+    // Clicks from the editor. On-screen keyboard notes join the incoming MIDI.
     {
-        const auto ready = padFifo.getNumReady();
-        const auto scope = padFifo.read (ready);
+        const auto channel = juce::jlimit (1, 16, (int) channelParam->load());
+        const auto velocity = (juce::uint8) juce::jlimit (1, 127, (int) velocityParam->load());
+        const auto scope = uiFifo.read (uiFifo.getNumReady());
 
         auto handle = [&] (int start, int size)
         {
             for (int i = start; i < start + size; ++i)
             {
-                const auto event = padEvents[(size_t) i];
-                auto& held = padChords[(size_t) event.degree];
-                if (event.pressed)
-                    startChord (held, event.degree, out, 0);
-                else
-                    stopChord (held, out, 0);
+                const auto& event = uiEvents[(size_t) i];
+
+                switch (event.kind)
+                {
+                    case UiEvent::Kind::pad:
+                    {
+                        auto& held = padChords[(size_t) event.index];
+                        if (event.pressed)
+                            startChord (held, event.index, out, 0);
+                        else
+                            stopChord (held, out, 0);
+                        break;
+                    }
+
+                    case UiEvent::Kind::detectedChord:
+                    {
+                        auto& held = detectedChordsHeld[(size_t) event.index];
+                        if (event.pressed)
+                            startNotes (held, event.notes.data(), event.numNotes, out, 0);
+                        else
+                            stopChord (held, out, 0);
+                        break;
+                    }
+
+                    case UiEvent::Kind::keyboardNote:
+                        midi.addEvent (event.pressed ? juce::MidiMessage::noteOn (channel, event.index, velocity)
+                                                     : juce::MidiMessage::noteOff (channel, event.index),
+                                       0);
+                        break;
+                }
             }
         };
 
@@ -237,8 +336,18 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             }
         }
 
+        // Notes that pass through are what chord detection listens to.
+        if (message.isNoteOn())
+            setHeldInputNote (message.getNoteNumber(), true);
+        else if (message.isNoteOff())
+            setHeldInputNote (message.getNoteNumber(), false);
+
         if (message.isAllNotesOff() || message.isAllSoundOff())
+        {
             stopAllChords (out, pos);
+            for (auto& word : heldInputNotes)
+                word.store (0);
+        }
 
         out.addEvent (message, pos);
     }
