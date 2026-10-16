@@ -46,17 +46,49 @@ namespace madscaler
         arpeggio // the chord's notes one at a time
     };
 
+    // The order the arpeggio plays the chord's notes in. New styles go at the
+    // end, since saved projects store the number.
     enum class ArpStyle
     {
         up,
         down,
         upDown,
-        alberti, // low, high, middle, high
-        pinky,   // the lowest note between rising notes
-        random
+        alberti,      // low, high, middle, high
+        pinky,        // the lowest note between the others ("Pedal low")
+        random,
+        downUp,
+        upDownRepeat, // up and down, playing the top and bottom notes twice
+        pedalHigh,    // the highest note between the others
+        converge,     // outside in: low, high, 2nd low, 2nd high...
+        diverge,      // inside out, from the middle
+        skip,         // 1 3 2 4 3 5...
+        steps,        // 1 2 3, 2 3 4, 3 4 5...
+        octaves,      // each note, then the same note an octave up
+        randomWalk    // moves to a neighbouring note, up or down
     };
 
     const std::vector<const char*>& getArpStyleNames();
+
+    // Which notes the arpeggio uses.
+    enum class ArpNotes
+    {
+        chord,
+        add9,
+        add7,
+        add6,
+        rootFifth
+    };
+
+    const std::vector<const char*>& getArpNotesNames();
+
+    // How notes are made louder and softer.
+    enum class Accent
+    {
+        beats,      // on the beat a bit louder
+        even,
+        everyThird, // every third note, across the beat
+        rising      // grows louder through each chord
+    };
 
     struct MelodySettings
     {
@@ -70,6 +102,17 @@ namespace madscaler
         int scaleIndex = 0;     // index into getMelodyScales()
         int velocity = 100;
         uint32_t seed = 1;      // each seed gives a different melody
+
+        int gate = 1;           // 0 staccato, 1 normal, 2 legato
+        int swing = 0;          // 0 none, 1 light, 2 medium, 3 heavy
+        Accent accent = Accent::beats;
+
+        // Arpeggio only.
+        int arpOctaves = 2;     // 1-4, upwards from lowNote
+        ArpNotes arpNotes = ArpNotes::chord;
+        int variation = 0;      // 0 none ... 3 wild: rests, repeats, octave jumps, neighbours
+        bool bassNote = false;  // hold the chord's root below the arpeggio
+        bool keepFlowing = false; // carry on through chord changes instead of restarting
     };
 
     // One pass of a melody or arpeggio over the chords, in beats from the start.

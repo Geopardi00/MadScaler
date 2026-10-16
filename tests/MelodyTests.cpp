@@ -132,6 +132,93 @@ int main()
         expect (pinky[0].note == pinky[2].note && pinky[2].note == pinky[4].note && pinky[1].note < pinky[3].note,
                 "pinky returns to the lowest note");
 
+    // Every arp style uses only the chord's notes and is the same for the same seed.
+    arp.rhythm = 2;
+    for (int style = 0; style < (int) getArpStyleNames().size(); ++style)
+    {
+        arp.arpStyle = (ArpStyle) style;
+        const auto first = generateMelody (pop, arp);
+        const auto again = generateMelody (pop, arp);
+        expect (first.size() == 64, std::string ("style ") + getArpStyleNames()[(size_t) style] + " fills the sixteenths");
+        bool same = first.size() == again.size();
+        for (size_t i = 0; same && i < first.size(); ++i)
+            same = first[i].note == again[i].note;
+        expect (same, std::string ("style ") + getArpStyleNames()[(size_t) style] + " repeats with the same seed");
+        for (size_t i = 0; i < std::min<size_t> (16, first.size()); ++i)
+            expect (std::set<int> { 0, 4, 7 }.count (first[i].note % 12) == 1,
+                    std::string ("style ") + getArpStyleNames()[(size_t) style] + " uses C chord notes");
+    }
+
+    arp.arpStyle = ArpStyle::converge; // 60 64 67 72 76 79 -> outside in
+    const auto converge = generateMelody (pop, arp);
+    expect (converge.size() > 3 && converge[0].note == 60 && converge[1].note == 79 && converge[2].note == 64 && converge[3].note == 76,
+            "outside in goes 60 79 64 76");
+
+    arp.arpStyle = ArpStyle::octaves;
+    const auto pairs = generateMelody (pop, arp);
+    expect (pairs.size() > 3 && pairs[1].note == pairs[0].note + 12 && pairs[2].note == 64, "octave pairs: note, octave, next note");
+
+    arp.arpStyle = ArpStyle::up;
+    arp.arpOctaves = 1;
+    const auto oneOctave = generateMelody (pop, arp);
+    expect (oneOctave.size() > 3 && oneOctave[3].note == 60, "one octave of C wraps after three notes");
+    arp.arpOctaves = 3;
+    const auto threeOctaves = generateMelody (pop, arp);
+    expect (threeOctaves.size() > 8 && threeOctaves[6].note == 84 && threeOctaves[8].note == 91, "three octaves of C reach 91");
+    arp.arpOctaves = 2;
+
+    arp.arpNotes = ArpNotes::add9;
+    const auto ninth = generateMelody (pop, arp);
+    expect (ninth.size() > 1 && ninth[1].note == 62, "add 9th puts D in the C arpeggio");
+    arp.arpNotes = ArpNotes::rootFifth;
+    const auto fifths = generateMelody (pop, arp);
+    expect (fifths.size() > 2 && fifths[1].note == 67 && fifths[2].note == 72, "root and 5th skips the third");
+    arp.arpNotes = ArpNotes::chord;
+
+    arp.bassNote = true;
+    const auto withBass = generateMelody (pop, arp);
+    expect (withBass.size() == 68 && withBass[0].note == 48 && withBass[0].lengthBeats > 3.5, "bass note holds C2 under the C arpeggio");
+    arp.bassNote = false;
+
+    arp.keepFlowing = true;
+    const auto flowing = generateMelody (pop, arp);
+    expect (flowing.size() == 64 && flowing[16].note == 76, "keep flowing carries on through the chord change");
+    arp.keepFlowing = false;
+
+    arp.gate = 0;
+    const auto staccato = generateMelody (pop, arp);
+    expect (! staccato.empty() && std::abs (staccato[0].lengthBeats - 0.125) < 1.0e-6, "staccato halves the length");
+    arp.gate = 1;
+
+    arp.rhythm = 1; // eighths
+    arp.swing = 3;
+    const auto swung = generateMelody (pop, arp);
+    expect (swung.size() > 1 && std::abs (swung[1].startBeat - 0.665) < 1.0e-6 && swung[1].startBeat + swung[1].lengthBeats < 1.0 + 1.0e-6,
+            "heavy swing moves the off-beat eighth late");
+    arp.swing = 0;
+    arp.rhythm = 2;
+
+    arp.variation = 3;
+    const auto varied = generateMelody (pop, arp);
+    bool variedDiffers = varied.size() != up.size();
+    for (size_t i = 0; ! variedDiffers && i < varied.size(); ++i)
+        variedDiffers = varied[i].note != up[i].note || std::abs (varied[i].startBeat - up[i].startBeat) > 1.0e-6;
+    expect (variedDiffers, "wild variation changes the arpeggio");
+    for (const auto& note : varied)
+        if (note.startBeat < 4.0)
+            expect (std::set<int> { 0, 4, 7 }.count (note.note % 12) == 1, "variation keeps to the chord's notes");
+    expect (! varied.empty() && varied[0].note == 60, "variation keeps the first note of the chord");
+
+    for (int r = 0; r < (int) getRhythmPatterns().size(); ++r)
+    {
+        arp.rhythm = r;
+        const auto notes = generateMelody (pop, arp);
+        expect (! notes.empty(), std::string ("rhythm ") + getRhythmPatterns()[(size_t) r].name + " makes notes");
+        for (const auto& note : notes)
+            expect (note.startBeat >= 0.0 && note.startBeat + note.lengthBeats <= 16.0 + 1.0e-6,
+                    std::string ("rhythm ") + getRhythmPatterns()[(size_t) r].name + " stays inside the chords");
+    }
+
     if (failures == 0)
         std::cout << "All melody tests passed\n";
     return failures == 0 ? 0 : 1;

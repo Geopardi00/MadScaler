@@ -64,9 +64,16 @@ code, presets or assets from, any commercial chord plugin.
   first, including pentatonic and blues scales. Pick a scale and it invents a
   melody over the chords: chord notes on the strong beats, scale steps in
   between, ending on the last chord's root. Switch to Arpeggio to play the
-  chord notes one at a time (up, down, up-down, Alberti, pinky or random).
-  Both follow one of 14 rhythms (straight eighths, triplets, tresillo,
-  gallop, offbeats, pop hooks and more), in a low, middle or high register.
+  chord notes one at a time in 15 styles (up, down, up-down, down-up,
+  Alberti, low or high pedal, outside in, inside out, skip, steps, octave
+  pairs, random, random walk), over 1 to 4 octaves, with the chord's notes
+  or an added 9th, 7th or 6th, or just root and 5th. Variation adds rests,
+  quick repeats, octave jumps and neighbouring notes; Bass holds the root
+  under it; Keep flowing carries the pattern through chord changes.
+  Both modes follow one of 21 rhythms (eighths, sixteenths, triplets,
+  sextuplets, shuffle, tresillo, clave, gallop, groups of 3 and more), with
+  staccato, normal or legato notes, swing, and accents on the beat, every
+  third note or rising through each chord.
   "New melody" invents another one. With "Play along" on, the melody plays
   with the progression on its own MIDI channel (2 by default), so it can go
   to a different synth. "Drag melody" or "Export" saves it as MIDI.

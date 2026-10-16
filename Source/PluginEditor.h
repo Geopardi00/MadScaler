@@ -416,8 +416,10 @@ namespace madscaler::ui
         std::vector<madscaler::ScaleFit> fits;
         ScaleModel scaleModel { *this };
         juce::ListBox scaleList;
-        juce::Label titleLabel, chordsLabel, channelLabel;
+        juce::Label titleLabel, channelLabel;
         juce::ComboBox modeBox, rhythmBox, arpBox, densityBox, rangeBox;
+        juce::ComboBox octavesBox, notesBox, variationBox, gateBox, accentBox, swingBox;
+        juce::ToggleButton bassButton { "Bass" }, flowButton { "Keep flowing" };
         juce::Slider channelSlider;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> channelAttachment;
         juce::TextButton getChordsButton { "Get chords" }, newButton { "New melody" }, playButton { "Play along" },

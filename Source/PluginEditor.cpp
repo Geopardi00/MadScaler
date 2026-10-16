@@ -1435,9 +1435,6 @@ namespace madscaler::ui
         titleLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         addAndMakeVisible (titleLabel);
 
-        chordsLabel.setColour (juce::Label::textColourId, Colours::textDim);
-        chordsLabel.setFont (juce::FontOptions (11.5f));
-        addAndMakeVisible (chordsLabel);
 
         scaleList.setModel (&scaleModel);
         scaleList.setRowHeight (20);
@@ -1457,9 +1454,24 @@ namespace madscaler::ui
         densityBox.addItemList ({ "Sparse", "Medium", "Busy" }, 1);
         densityBox.setTooltip ("How many of the rhythm's notes the melody plays");
         rangeBox.addItemList ({ "Low", "Middle", "High" }, 1);
-        rangeBox.setTooltip ("Register: Low C3-G4, Middle C4-G5, High C5-G6");
+        rangeBox.setTooltip ("Register: Low C3-G4, Middle C4-G5, High C5-G6. Arpeggios start at its lowest note.");
 
-        for (auto* box : { &modeBox, &rhythmBox, &arpBox, &densityBox, &rangeBox })
+        octavesBox.addItemList ({ "1 octave", "2 octaves", "3 octaves", "4 octaves" }, 1);
+        octavesBox.setTooltip ("How far the arpeggio climbs");
+        for (const auto* name : madscaler::getArpNotesNames())
+            notesBox.addItem (name, notesBox.getNumItems() + 1);
+        notesBox.setTooltip ("Notes the arpeggio uses: the chord, the chord with a 9th, 7th or 6th from the scale, or just root and 5th");
+        variationBox.addItemList ({ "No variation", "Light variation", "More variation", "Wild variation" }, 1);
+        variationBox.setTooltip ("Adds rests, quick repeats, octave jumps and neighbouring notes. New melody rolls them again.");
+        gateBox.addItemList ({ "Staccato", "Normal", "Legato" }, 1);
+        gateBox.setTooltip ("Note length: short, normal or joined up");
+        accentBox.addItemList ({ "Accent beats", "Even", "Accent every 3rd", "Rising" }, 1);
+        accentBox.setTooltip ("Which notes are louder. Every 3rd makes an accent pattern across the beat; Rising grows through each chord.");
+        swingBox.addItemList ({ "No swing", "Light swing", "Medium swing", "Heavy swing" }, 1);
+        swingBox.setTooltip ("Pushes off-beat eighths and sixteenths late for a shuffled feel");
+
+        for (auto* box : { &modeBox, &rhythmBox, &arpBox, &densityBox, &rangeBox,
+                           &octavesBox, &notesBox, &variationBox, &gateBox, &accentBox, &swingBox })
         {
             box->onChange = [this]
             {
@@ -1467,6 +1479,15 @@ namespace madscaler::ui
                 regenerate (false);
             };
             addAndMakeVisible (*box);
+        }
+
+        bassButton.setTooltip ("Hold each chord's root under the arpeggio");
+        flowButton.setTooltip ("Carry the pattern on through chord changes instead of starting again on each chord");
+        for (auto* button : { &bassButton, &flowButton })
+        {
+            button->setColour (juce::ToggleButton::textColourId, Colours::textDim);
+            button->onClick = [this] { regenerate (false); };
+            addAndMakeVisible (*button);
         }
 
         channelLabel.setText ("Ch", juce::dontSendNotification);
@@ -1539,14 +1560,17 @@ namespace madscaler::ui
         rhythmBox.setSelectedId (settings.rhythm + 1, juce::dontSendNotification);
         arpBox.setSelectedId ((int) settings.arpStyle + 1, juce::dontSendNotification);
         densityBox.setSelectedId (settings.density + 1, juce::dontSendNotification);
+        octavesBox.setSelectedId (settings.arpOctaves, juce::dontSendNotification);
+        notesBox.setSelectedId ((int) settings.arpNotes + 1, juce::dontSendNotification);
+        variationBox.setSelectedId (settings.variation + 1, juce::dontSendNotification);
+        gateBox.setSelectedId (settings.gate + 1, juce::dontSendNotification);
+        accentBox.setSelectedId ((int) settings.accent + 1, juce::dontSendNotification);
+        swingBox.setSelectedId (settings.swing + 1, juce::dontSendNotification);
+        bassButton.setToggleState (settings.bassNote, juce::dontSendNotification);
+        flowButton.setToggleState (settings.keepFlowing, juce::dontSendNotification);
         rangeBox.setSelectedId (settings.lowNote < 60 ? 1 : (settings.lowNote > 60 ? 3 : 2), juce::dontSendNotification);
         playButton.setToggleState (processor.isMelodyPlaying(), juce::dontSendNotification);
 
-        juce::StringArray names;
-        for (const auto& chord : state.chords)
-            names.add (juce::String::fromUTF8 (chord.name.c_str()));
-        chordsLabel.setText (names.isEmpty() ? juce::String ("No chords yet") : "Chords: " + names.joinIntoString ("  "),
-                             juce::dontSendNotification);
 
         updateEnablement();
         roll.setMelody (state);
@@ -1581,6 +1605,14 @@ namespace madscaler::ui
         settings.rhythm = juce::jmax (0, rhythmBox.getSelectedId() - 1);
         settings.arpStyle = (madscaler::ArpStyle) juce::jmax (0, arpBox.getSelectedId() - 1);
         settings.density = juce::jmax (0, densityBox.getSelectedId() - 1);
+        settings.arpOctaves = juce::jlimit (1, 4, octavesBox.getSelectedId());
+        settings.arpNotes = (madscaler::ArpNotes) juce::jmax (0, notesBox.getSelectedId() - 1);
+        settings.variation = juce::jmax (0, variationBox.getSelectedId() - 1);
+        settings.gate = juce::jmax (0, gateBox.getSelectedId() - 1);
+        settings.accent = (madscaler::Accent) juce::jmax (0, accentBox.getSelectedId() - 1);
+        settings.swing = juce::jmax (0, swingBox.getSelectedId() - 1);
+        settings.bassNote = bassButton.getToggleState();
+        settings.keepFlowing = flowButton.getToggleState();
         const auto range = juce::jmax (0, rangeBox.getSelectedId() - 1);
         settings.lowNote = 48 + 12 * range;
         settings.highNote = settings.lowNote + 19;
@@ -1614,6 +1646,11 @@ namespace madscaler::ui
         const auto arpeggio = modeBox.getSelectedId() == 2;
         arpBox.setVisible (arpeggio);
         densityBox.setVisible (! arpeggio);
+        for (juce::Component* control : std::initializer_list<juce::Component*> { &octavesBox, &notesBox, &variationBox, &bassButton, &flowButton })
+        {
+            control->setEnabled (arpeggio);
+            control->setAlpha (arpeggio ? 1.0f : 0.4f);
+        }
 
         const auto hasNotes = ! processor.getMelodyState().notes.empty();
         exportButton.setEnabled (hasNotes);
@@ -1719,28 +1756,43 @@ namespace madscaler::ui
     {
         auto area = getLocalBounds().reduced (10, 8);
 
-        auto left = area.removeFromLeft (210);
+        auto left = area.removeFromLeft (196);
         area.removeFromLeft (10);
         titleLabel.setBounds (left.removeFromTop (20));
         getChordsButton.setBounds (left.removeFromBottom (24));
         left.removeFromBottom (4);
         scaleList.setBounds (left);
 
+        auto place = [] (juce::Rectangle<int>& row, juce::Component& component, int width)
+        {
+            component.setBounds (row.removeFromLeft (width));
+            row.removeFromLeft (6);
+        };
+
         auto row = area.removeFromTop (24);
-        modeBox.setBounds (row.removeFromLeft (96));
+        place (row, modeBox, 92);
+        place (row, rhythmBox, 160);
+        const auto styleArea = row.removeFromLeft (150);
         row.removeFromLeft (6);
-        rhythmBox.setBounds (row.removeFromLeft (150));
-        row.removeFromLeft (6);
-        const auto styleArea = row.removeFromLeft (110);
         arpBox.setBounds (styleArea);
         densityBox.setBounds (styleArea);
-        row.removeFromLeft (6);
-        rangeBox.setBounds (row.removeFromLeft (86));
+        place (row, rangeBox, 80);
         channelSlider.setBounds (row.removeFromRight (84));
         channelLabel.setBounds (row);
 
         area.removeFromTop (6);
         row = area.removeFromTop (24);
+        place (row, octavesBox, 86);
+        place (row, notesBox, 100);
+        place (row, variationBox, 116);
+        place (row, gateBox, 80);
+        place (row, accentBox, 108);
+        swingBox.setBounds (row);
+
+        area.removeFromTop (6);
+        row = area.removeFromTop (24);
+        place (row, bassButton, 64);
+        place (row, flowButton, 112);
         dragHandle.setBounds (row.removeFromRight (100));
         row.removeFromRight (6);
         exportButton.setBounds (row.removeFromRight (64));
@@ -1748,8 +1800,6 @@ namespace madscaler::ui
         playButton.setBounds (row.removeFromRight (86));
         row.removeFromRight (6);
         newButton.setBounds (row.removeFromRight (92));
-        row.removeFromRight (6);
-        chordsLabel.setBounds (row);
 
         area.removeFromTop (6);
         roll.setBounds (area);
@@ -1913,8 +1963,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (keyboard);
 
     setResizable (true, true);
-    setResizeLimits (800, 820, 1600, 1380);
-    setSize (880, 880);
+    setResizeLimits (800, 850, 1600, 1410);
+    setSize (880, 910);
     startTimerHz (30);
 }
 
@@ -1990,7 +2040,7 @@ void MadScalerEditor::resized()
     libraryTab.setBounds (tabs.removeFromLeft (90));
     detectTab.setBounds (tabs.removeFromLeft (90));
     melodyTab.setBounds (tabs.removeFromLeft (90));
-    const auto panelArea = area.removeFromTop (170);
+    const auto panelArea = area.removeFromTop (200);
     coloursPanel.setBounds (panelArea);
     libraryPanel.setBounds (panelArea);
     detectionPanel.setBounds (panelArea);

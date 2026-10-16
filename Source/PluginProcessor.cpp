@@ -954,6 +954,14 @@ void MadScalerProcessor::getStateInformation (juce::MemoryBlock& destData)
     melodyTree.setProperty ("key", settings.keyPitchClass, nullptr);
     melodyTree.setProperty ("scale", settings.scaleIndex, nullptr);
     melodyTree.setProperty ("seed", (int) settings.seed, nullptr);
+    melodyTree.setProperty ("gate", settings.gate, nullptr);
+    melodyTree.setProperty ("swing", settings.swing, nullptr);
+    melodyTree.setProperty ("accent", (int) settings.accent, nullptr);
+    melodyTree.setProperty ("arpOctaves", settings.arpOctaves, nullptr);
+    melodyTree.setProperty ("arpNotes", (int) settings.arpNotes, nullptr);
+    melodyTree.setProperty ("variation", settings.variation, nullptr);
+    melodyTree.setProperty ("bassNote", settings.bassNote, nullptr);
+    melodyTree.setProperty ("keepFlowing", settings.keepFlowing, nullptr);
     melodyTree.setProperty ("total", melodyState.totalBeats, nullptr);
     melodyTree.setProperty ("playing", melodyPlaying.load(), nullptr);
 
@@ -1009,13 +1017,23 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
         auto& settings = melody.settings;
         settings.mode = (madscaler::MelodyMode) juce::jlimit (0, 1, (int) melodyTree.getProperty ("mode", 0));
         settings.rhythm = (int) melodyTree.getProperty ("rhythm", 0);
-        settings.arpStyle = (madscaler::ArpStyle) juce::jlimit (0, 5, (int) melodyTree.getProperty ("arpStyle", 0));
+        settings.arpStyle = (madscaler::ArpStyle) juce::jlimit (0, (int) madscaler::getArpStyleNames().size() - 1,
+                                                                (int) melodyTree.getProperty ("arpStyle", 0));
         settings.density = (int) melodyTree.getProperty ("density", 1);
         settings.lowNote = (int) melodyTree.getProperty ("low", 60);
         settings.highNote = (int) melodyTree.getProperty ("high", 79);
         settings.keyPitchClass = (int) melodyTree.getProperty ("key", 0);
         settings.scaleIndex = (int) melodyTree.getProperty ("scale", 0);
         settings.seed = (uint32_t) (int) melodyTree.getProperty ("seed", 1);
+        settings.gate = juce::jlimit (0, 2, (int) melodyTree.getProperty ("gate", 1));
+        settings.swing = juce::jlimit (0, 3, (int) melodyTree.getProperty ("swing", 0));
+        settings.accent = (madscaler::Accent) juce::jlimit (0, 3, (int) melodyTree.getProperty ("accent", 0));
+        settings.arpOctaves = juce::jlimit (1, 4, (int) melodyTree.getProperty ("arpOctaves", 2));
+        settings.arpNotes = (madscaler::ArpNotes) juce::jlimit (0, (int) madscaler::getArpNotesNames().size() - 1,
+                                                                (int) melodyTree.getProperty ("arpNotes", 0));
+        settings.variation = juce::jlimit (0, 3, (int) melodyTree.getProperty ("variation", 0));
+        settings.bassNote = (bool) melodyTree.getProperty ("bassNote", false);
+        settings.keepFlowing = (bool) melodyTree.getProperty ("keepFlowing", false);
         melody.totalBeats = (double) melodyTree.getProperty ("total", 0.0);
         melodyPlaying.store ((bool) melodyTree.getProperty ("playing", true));
 
