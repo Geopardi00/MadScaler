@@ -185,6 +185,34 @@ namespace madscaler::ui
         CircleOfFifths circle;
     };
 
+    // Edits the notes of one progression chord on a small keyboard: click keys
+    // to add or remove notes. The chord is renamed as it changes.
+    class ChordNotesEditor : public juce::Component
+    {
+    public:
+        ChordNotesEditor (MadScalerProcessor& processor, int slotIndex);
+        ~ChordNotesEditor() override;
+
+        void paint (juce::Graphics&) override;
+        void resized() override;
+        void mouseDown (const juce::MouseEvent&) override;
+
+    private:
+        std::vector<int> currentNotes() const;
+        void apply (std::vector<int> notes);
+        void play();
+        juce::Rectangle<float> keyBounds (int note) const;
+        int keyAt (juce::Point<float> position) const;
+        juce::Rectangle<int> keyboardArea() const;
+
+        MadScalerProcessor& processor;
+        const int slotIndex;
+        int lowNote = 48; // a C, three octaves shown
+        juce::Label nameLabel, hintLabel;
+        juce::TextButton downButton { "Octave -" }, upButton { "Octave +" }, invertButton { "Invert" }, playButton { "Play" };
+        static constexpr int auditionId = 390;
+    };
+
     // One chord of the progression. Right-click for length, move and delete.
     class ProgressionSlotView : public juce::Component
     {

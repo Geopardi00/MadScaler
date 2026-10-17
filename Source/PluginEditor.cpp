@@ -634,6 +634,216 @@ namespace madscaler::ui
         }
     }
 
+    ChordNotesEditor::ChordNotesEditor (MadScalerProcessor& p, int index) : processor (p), slotIndex (index)
+    {
+        // Three octaves from the C at or below the lowest note.
+        const auto notes = currentNotes();
+        if (! notes.empty())
+            lowNote = juce::jlimit (0, 91, (notes.front() / 12) * 12);
+
+        nameLabel.setFont (juce::FontOptions (18.0f, juce::Font::bold));
+        nameLabel.setColour (juce::Label::textColourId, Colours::accent);
+        addAndMakeVisible (nameLabel);
+        hintLabel.setText ("Click keys to add or remove notes", juce::dontSendNotification);
+        hintLabel.setFont (juce::FontOptions (11.5f));
+        hintLabel.setColour (juce::Label::textColourId, Colours::textDim);
+        hintLabel.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (hintLabel);
+
+        for (auto* button : { &downButton, &upButton, &invertButton, &playButton })
+        {
+            button->setColour (juce::TextButton::buttonColourId, Colours::pad);
+            button->setColour (juce::TextButton::textColourOffId, Colours::text);
+            addAndMakeVisible (*button);
+        }
+        downButton.onClick = [this]
+        {
+            auto notes = currentNotes();
+            for (auto& note : notes)
+                note -= 12;
+            if (! notes.empty() && notes.front() >= 0)
+                apply (notes);
+        };
+        upButton.onClick = [this]
+        {
+            auto notes = currentNotes();
+            for (auto& note : notes)
+                note += 12;
+            if (! notes.empty() && notes.back() <= 127)
+                apply (notes);
+        };
+        invertButton.setTooltip ("Move the lowest note up an octave");
+        invertButton.onClick = [this]
+        {
+            auto notes = currentNotes();
+            if (notes.size() > 1 && notes.front() + 12 <= 127)
+            {
+                notes.front() += 12;
+                apply (notes);
+            }
+        };
+        playButton.onClick = [this] { play(); };
+
+        setSize (520, 170);
+        apply (currentNotes());
+    }
+
+    ChordNotesEditor::~ChordNotesEditor()
+    {
+        processor.setColourChordPressed (auditionId, {}, false);
+    }
+
+    std::vector<int> ChordNotesEditor::currentNotes() const
+    {
+        const auto& slots = processor.getProgression().slots;
+        return slotIndex < (int) slots.size() ? slots[(size_t) slotIndex].notes : std::vector<int>();
+    }
+
+    void ChordNotesEditor::apply (std::vector<int> notes)
+    {
+        std::sort (notes.begin(), notes.end());
+        notes.erase (std::unique (notes.begin(), notes.end()), notes.end());
+
+        auto progression = processor.getProgression();
+        if (slotIndex >= (int) progression.slots.size() || notes.empty())
+            return;
+
+        auto& slot = progression.slots[(size_t) slotIndex];
+        const auto detected = madscaler::detectChord (notes, processor.getKey(), processor.getScaleIndex());
+        if (detected.valid)
+        {
+            slot.name = detected.name;
+        }
+        else
+        {
+            juce::StringArray names;
+            for (auto note : notes)
+                names.add (madscaler::spellNote (note, processor.getKey(), processor.getScaleIndex()));
+            slot.name = names.joinIntoString (" ").toStdString();
+        }
+
+        const auto changed = slot.notes != notes;
+        slot.notes = notes;
+        if (changed)
+            processor.setProgression (progression);
+
+        nameLabel.setText (juce::String::fromUTF8 (slot.name.c_str()), juce::dontSendNotification);
+        if (notes.front() < lowNote || notes.back() >= lowNote + 36)
+            lowNote = juce::jlimit (0, 91, (notes.front() / 12) * 12);
+        repaint();
+    }
+
+    void ChordNotesEditor::play()
+    {
+        processor.setColourChordPressed (auditionId, currentNotes(), true);
+        juce::Timer::callAfterDelay (400, [safe = juce::Component::SafePointer<ChordNotesEditor> (this)]
+                                     {
+                                         if (safe != nullptr)
+                                             safe->processor.setColourChordPressed (auditionId, {}, false);
+                                     });
+    }
+
+    juce::Rectangle<int> ChordNotesEditor::keyboardArea() const
+    {
+        auto area = getLocalBounds().reduced (10);
+        area.removeFromTop (32);
+        area.removeFromBottom (34);
+        return area;
+    }
+
+    juce::Rectangle<float> ChordNotesEditor::keyBounds (int note) const
+    {
+        const auto area = keyboardArea().toFloat();
+        const auto whiteWidth = area.getWidth() / 21.0f;
+        int whiteIndex = 0;
+        for (int n = lowNote; n < note; ++n)
+            if (! juce::MidiMessage::isMidiNoteBlack (n))
+                ++whiteIndex;
+
+        if (juce::MidiMessage::isMidiNoteBlack (note))
+            return { area.getX() + (float) whiteIndex * whiteWidth - whiteWidth * 0.3f, area.getY(), whiteWidth * 0.6f, area.getHeight() * 0.6f };
+        return { area.getX() + (float) whiteIndex * whiteWidth, area.getY(), whiteWidth, area.getHeight() };
+    }
+
+    int ChordNotesEditor::keyAt (juce::Point<float> position) const
+    {
+        for (int note = lowNote; note < lowNote + 36; ++note)
+            if (juce::MidiMessage::isMidiNoteBlack (note) && keyBounds (note).contains (position))
+                return note;
+        for (int note = lowNote; note < lowNote + 36; ++note)
+            if (! juce::MidiMessage::isMidiNoteBlack (note) && keyBounds (note).contains (position))
+                return note;
+        return -1;
+    }
+
+    void ChordNotesEditor::mouseDown (const juce::MouseEvent& e)
+    {
+        const auto note = keyAt (e.position);
+        if (note < 0)
+            return;
+
+        auto notes = currentNotes();
+        const auto found = std::find (notes.begin(), notes.end(), note);
+        if (found != notes.end())
+        {
+            if (notes.size() > 1)
+                notes.erase (found);
+        }
+        else
+        {
+            notes.push_back (note);
+        }
+        apply (notes);
+        play();
+    }
+
+    void ChordNotesEditor::paint (juce::Graphics& g)
+    {
+        g.fillAll (Colours::panel);
+        const auto notes = currentNotes();
+        auto isOn = [&notes] (int n) { return std::find (notes.begin(), notes.end(), n) != notes.end(); };
+
+        for (int pass = 0; pass < 2; ++pass)
+            for (int note = lowNote; note < lowNote + 36; ++note)
+            {
+                const auto black = juce::MidiMessage::isMidiNoteBlack (note);
+                if (black != (pass == 1))
+                    continue;
+
+                const auto bounds = keyBounds (note).reduced (0.5f, 0.0f);
+                const auto on = isOn (note);
+                const auto inScale = madscaler::isInScale (note, processor.getKey(), processor.getScaleIndex());
+                g.setColour (on ? Colours::padLit : black ? Colours::background : (inScale ? Colours::scaleKey : Colours::textDim));
+                g.fillRect (bounds);
+                g.setColour (Colours::background);
+                g.drawRect (bounds, 1.0f);
+
+                if (! black && note % 12 == 0)
+                {
+                    g.setColour (on ? Colours::text : Colours::background);
+                    g.setFont (juce::FontOptions (10.0f));
+                    g.drawText (juce::MidiMessage::getMidiNoteName (note, true, true, 4),
+                                bounds.withTrimmedTop (bounds.getHeight() - 14.0f), juce::Justification::centred);
+                }
+            }
+    }
+
+    void ChordNotesEditor::resized()
+    {
+        auto area = getLocalBounds().reduced (10);
+        auto top = area.removeFromTop (26);
+        nameLabel.setBounds (top.removeFromLeft (200));
+        hintLabel.setBounds (top);
+
+        auto bottom = area.removeFromBottom (26);
+        for (auto* button : { &downButton, &upButton, &invertButton, &playButton })
+        {
+            button->setBounds (bottom.removeFromLeft (90));
+            bottom.removeFromLeft (8);
+        }
+    }
+
+
     ProgressionSlotView::ProgressionSlotView (MadScalerProcessor& p, int i) : processor (p), index (i) {}
 
     void ProgressionSlotView::setSlot (const madscaler::ProgressionSlot* newSlot, bool isNextEmpty)
@@ -757,6 +967,12 @@ namespace madscaler::ui
         menu.addSectionHeader (juce::String::fromUTF8 (slot.name.c_str()));
         menu.addSubMenu ("Replace with", replaceMenu);
         menu.addItem ("Pick a new chord...", [this] { if (onClicked) onClicked (index); });
+        menu.addItem ("Edit notes...", [this]
+        {
+            auto* top = getTopLevelComponent();
+            juce::CallOutBox::launchAsynchronously (std::make_unique<ChordNotesEditor> (processor, index),
+                                                    top->getLocalArea (this, getLocalBounds()), top);
+        });
         menu.addSubMenu ("Length", lengthMenu);
         menu.addItem ("Move left", index > 0, false, [this]
         {
