@@ -145,16 +145,79 @@ madscaler::Chord MadScalerProcessor::getChordForDegree (int degree, const std::v
                                                     : madscaler::ChordSize::triad;
     // MIDI note 60 is C4, so the tonic of octave n is 12 * (n + 1) + key.
     auto chord = madscaler::buildDiatonicChord (key, getScaleIndex(), degree, size, 12 * (octave + 1) + key);
+
+    const auto colour = juce::isPositiveAndBelow (degree, numDegrees) ? padColours[(size_t) degree].load() : 0u;
+    if ((colour & 0x80000000u) != 0)
+    {
+        const auto rootOffset = (int) ((colour >> 24) & 0x0fu);
+        const auto root = 12 * (octave + 1) + key + rootOffset;
+        chord.notes.clear();
+        for (int interval = 0; interval < 24; ++interval)
+            if ((colour >> interval) & 1u)
+                chord.notes.push_back (juce::jlimit (0, 127, root + interval));
+        chord.rootPitchClass = (key + rootOffset) % 12;
+
+        const juce::SpinLock::ScopedTryLockType lock (padColourLock);
+        if (lock.isLocked())
+            chord.name = madscaler::spellNote (chord.rootPitchClass, key, getScaleIndex()) + padColourSuffixes[(size_t) degree];
+    }
+
     chord.notes = madscaler::voiceChord (chord.notes, getVoicingSettings(), previousNotes);
     return chord;
 }
 
-std::vector<madscaler::ColourGroup> MadScalerProcessor::getColoursForDegree (int degree, const std::vector<int>& previousNotes) const
+void MadScalerProcessor::setPadColour (int degree, const madscaler::ColourChord& chord)
+{
+    if (! juce::isPositiveAndBelow (degree, numDegrees) || chord.notes.empty())
+        return;
+
+    const auto rootPc = ((chord.rootPitchClass % 12) + 12) % 12;
+    const auto lowest = chord.notes.front();
+    const auto rootNote = lowest - (((lowest - rootPc) % 12) + 12) % 12;
+    uint32_t bits = 0x80000000u | ((uint32_t) (((rootPc - getKey()) % 12 + 12) % 12) << 24);
+    for (auto note : chord.notes)
+        if (juce::isPositiveAndBelow (note - rootNote, 24))
+            bits |= 1u << (note - rootNote);
+
+    // The name without its root, so the root can be spelled for any key.
+    auto suffix = chord.name;
+    if (! suffix.empty() && suffix[0] >= 'A' && suffix[0] <= 'G')
+    {
+        suffix.erase (0, 1);
+        if (! suffix.empty() && (suffix[0] == 'b' || suffix[0] == '#'))
+            suffix.erase (0, 1);
+    }
+
+    {
+        const juce::SpinLock::ScopedLockType lock (padColourLock);
+        padColourSuffixes[(size_t) degree] = suffix;
+    }
+    padColours[(size_t) degree].store (bits);
+    ++padColourVersion;
+}
+
+void MadScalerProcessor::clearPadColour (int degree)
+{
+    if (! juce::isPositiveAndBelow (degree, numDegrees))
+        return;
+    padColours[(size_t) degree].store (0u);
+    ++padColourVersion;
+}
+
+bool MadScalerProcessor::hasPadColour (int degree) const
+{
+    return juce::isPositiveAndBelow (degree, numDegrees) && (padColours[(size_t) degree].load() & 0x80000000u) != 0;
+}
+
+std::vector<madscaler::ColourGroup> MadScalerProcessor::getColoursForDegree (int degree, const std::vector<int>& previousNotes,
+                                                                             bool voiced) const
 {
     const auto key = getKey();
     const auto octave = (int) octaveParam->load();
     const auto sevenths = chordSizeParam->load() > 0.5f;
     auto groups = madscaler::getChordColours (key, getScaleIndex(), degree, sevenths, 12 * (octave + 1) + key);
+    if (! voiced)
+        return groups;
 
     const auto voicing = getVoicingSettings();
     for (auto& group : groups)
@@ -963,6 +1026,20 @@ void MadScalerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = parameters.copyState();
 
+    juce::ValueTree padsTree ("Pads");
+    {
+        const juce::SpinLock::ScopedLockType lock (padColourLock);
+        for (int degree = 0; degree < numDegrees; ++degree)
+        {
+            juce::ValueTree padTree ("Pad");
+            padTree.setProperty ("colour", juce::String::toHexString ((int) padColours[(size_t) degree].load()), nullptr);
+            padTree.setProperty ("suffix", juce::String::fromUTF8 (padColourSuffixes[(size_t) degree].c_str()), nullptr);
+            padsTree.appendChild (padTree, nullptr);
+        }
+    }
+    state.removeChild (state.getChildWithName ("Pads"), nullptr);
+    state.appendChild (padsTree, nullptr);
+
     juce::ValueTree progressionTree ("Progression");
     for (const auto& slot : progression.slots)
     {
@@ -1129,6 +1206,20 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
         }
     }
 
+    const auto padsTree = state.getChildWithName ("Pads");
+    for (int degree = 0; degree < numDegrees; ++degree)
+    {
+        const auto padTree = padsTree.getChild (degree);
+        const auto bits = padTree.isValid() ? (uint32_t) padTree.getProperty ("colour", "0").toString().getHexValue32() : 0u;
+        {
+            const juce::SpinLock::ScopedLockType lock (padColourLock);
+            padColourSuffixes[(size_t) degree] = padTree.isValid() ? padTree.getProperty ("suffix").toString().toStdString() : std::string();
+        }
+        padColours[(size_t) degree].store (bits);
+    }
+    ++padColourVersion;
+
+    state.removeChild (padsTree, nullptr);
     state.removeChild (progressionTree, nullptr);
     state.removeChild (melodyTree, nullptr);
     parameters.replaceState (state);

@@ -71,6 +71,15 @@ namespace madscaler::ui
 
         auto content = area.reduced (8.0f);
 
+        if (processor.hasPadColour (degree))
+        {
+            // A colour chord sits on this pad.
+            auto tag = area.reduced (8.0f).removeFromTop (16.0f).removeFromLeft (44.0f);
+            g.setColour (Colours::accent.withAlpha (0.9f));
+            g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+            g.drawText ("colour", tag, juce::Justification::centredLeft);
+        }
+
         g.setColour (lit ? Colours::text : Colours::textDim);
         g.setFont (juce::FontOptions (15.0f));
         g.drawFittedText (juce::String::fromUTF8 (chord.roman.c_str()),
@@ -91,8 +100,30 @@ namespace madscaler::ui
         g.drawFittedText (noteNames.joinIntoString (" "), content.toNearestInt(), juce::Justification::centred, 1);
     }
 
-    void ChordPad::mouseDown (const juce::MouseEvent&)
+    void ChordPad::mouseDown (const juce::MouseEvent& e)
     {
+        if (e.mods.isPopupMenu())
+        {
+            juce::PopupMenu menu;
+            if (processor.hasPadColour (degree))
+            {
+                const auto plain = madscaler::buildDiatonicChord (processor.getKey(), processor.getScaleIndex(), degree,
+                                                                  madscaler::ChordSize::triad, 60);
+                menu.addItem (1, "Back to the scale chord (" + juce::String::fromUTF8 (plain.name.c_str()) + ")");
+            }
+            else
+            {
+                menu.addItem (2, "Right-click a colour chord in the Colours tab to put it on this pad", false, false);
+            }
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                                [safe = juce::Component::SafePointer<ChordPad> (this)] (int result)
+                                {
+                                    if (safe != nullptr && result == 1 && safe->onResetColour)
+                                        safe->onResetColour (safe->degree);
+                                });
+            return;
+        }
+
         held = true;
         processor.setPadPressed (degree, true);
         if (onPressed)
@@ -280,10 +311,17 @@ namespace madscaler::ui
         g.drawFittedText (juce::String::fromUTF8 (chord.label.c_str()), text.toNearestInt(), juce::Justification::centredTop, 1);
     }
 
-    void ColourChip::mouseDown (const juce::MouseEvent&)
+    void ColourChip::mouseDown (const juce::MouseEvent& e)
     {
         if (! hasChord)
             return;
+
+        if (e.mods.isPopupMenu())
+        {
+            if (onMenu)
+                onMenu (id);
+            return;
+        }
 
         held = true;
         processor.setColourChordPressed (id, chord.notes, true);
@@ -463,7 +501,8 @@ namespace madscaler::ui
         titleLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         addAndMakeVisible (titleLabel);
 
-        hintLabel.setText ("Press a pad to see its colours. Right-click the circle to change key.", juce::dontSendNotification);
+        hintLabel.setText ("Press a pad to see its colours. Right-click a colour to put it on a pad, the circle to change key.",
+                           juce::dontSendNotification);
         hintLabel.setColour (juce::Label::textColourId, Colours::textDim);
         hintLabel.setFont (juce::FontOptions (11.5f));
         hintLabel.setJustificationType (juce::Justification::centredRight);
@@ -485,6 +524,7 @@ namespace madscaler::ui
                     if (onChordPressed)
                         onChordPressed (chord.name, chord.notes);
                 };
+                chip->onMenu = [this] (int id) { showChipMenu (id); };
                 addChildComponent (*chip);
             }
         }
@@ -495,6 +535,38 @@ namespace madscaler::ui
                 onChordPressed (chord.name, chord.notes);
         };
         addAndMakeVisible (circle);
+    }
+
+    void ColoursPanel::showChipMenu (int id)
+    {
+        const auto g = (size_t) (id / maxChipsPerGroup), i = (size_t) (id % maxChipsPerGroup);
+        if (g >= groups.size() || i >= groups[g].chords.size())
+            return;
+
+        // The chord in root position, so the pad voices it like its other chords.
+        const auto plain = processor.getColoursForDegree (degree, {}, false);
+        if (g >= plain.size() || i >= plain[g].chords.size())
+            return;
+        const auto chord = plain[g].chords[i];
+
+        juce::PopupMenu menu;
+        const auto here = processor.getChordForDegree (degree);
+        menu.addSectionHeader ("Put " + juce::String::fromUTF8 (chord.name.c_str()) + " on a pad");
+        menu.addItem (100 + degree, "This pad (" + juce::String::fromUTF8 (here.roman.c_str()) + ", now "
+                                        + juce::String::fromUTF8 (here.name.c_str()) + ")");
+        juce::PopupMenu others;
+        for (int d = 0; d < MadScalerProcessor::numDegrees; ++d)
+        {
+            const auto pad = processor.getChordForDegree (d);
+            others.addItem (100 + d, juce::String::fromUTF8 (pad.roman.c_str()) + " (now " + juce::String::fromUTF8 (pad.name.c_str()) + ")");
+        }
+        menu.addSubMenu ("Another pad", others);
+
+        menu.showMenuAsync (juce::PopupMenu::Options(), [safe = juce::Component::SafePointer<ColoursPanel> (this), chord] (int result)
+                            {
+                                if (safe != nullptr && result >= 100 && safe->onPutOnPad)
+                                    safe->onPutOnPad (result - 100, chord);
+                            });
     }
 
     void ColoursPanel::setDegree (int newDegree)
@@ -3000,6 +3072,17 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     {
         progressionStrip.chordPressed (name, notes);
     };
+    coloursPanel.onPutOnPad = [this] (int degree, const madscaler::ColourChord& chord)
+    {
+        processor.setPadColour (degree, chord);
+        refreshChords();
+    };
+    for (auto& pad : pads)
+        pad->onResetColour = [this] (int degree)
+        {
+            processor.clearPadColour (degree);
+            refreshChords();
+        };
 
     // With "Add chords" on, pressed chords also go into the progression.
     for (auto& pad : pads)
@@ -3158,9 +3241,10 @@ void MadScalerEditor::timerCallback()
     for (auto* id : { "key", "scale", "chordSize", "octave", "inversion", "voicing", "bass" })
         settings[index++] = processor.parameters.getRawParameterValue (id)->load();
 
-    if (settings != lastChordSettings)
+    if (settings != lastChordSettings || processor.getPadColourVersion() != lastPadColourVersion)
     {
         lastChordSettings = settings;
+        lastPadColourVersion = processor.getPadColourVersion();
         refreshChords();
     }
 

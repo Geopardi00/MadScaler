@@ -2,6 +2,7 @@
 #include "PluginProcessor.h"
 
 #include <iostream>
+#include <set>
 #include <vector>
 
 static int failures = 0;
@@ -404,6 +405,40 @@ int main()
                 "bass survives a save and reload");
         processor.setBassPlaying (false);
         processor.setProgression ({});
+    }
+
+    // A colour chord on a pad follows the key and survives a reload.
+    {
+        setParam (processor, "key", 0.0f);
+        setParam (processor, "scale", 0.0f);
+        setParam (processor, "chordSize", 0.0f);
+        madscaler::ColourChord maj7;
+        maj7.name = "Fmaj7";
+        maj7.rootPitchClass = 5;
+        maj7.notes = { 65, 69, 72, 76 };
+        processor.setPadColour (3, maj7);
+        expect (processor.hasPadColour (3), "pad IV has a colour");
+        auto chord = processor.getChordForDegree (3);
+        expect (chord.name == "Fmaj7" && chord.notes.size() == 4, "pad IV plays Fmaj7");
+
+        setParam (processor, "key", 2.0f); // D major: IV is G
+        chord = processor.getChordForDegree (3);
+        expect (chord.name == "Gmaj7", "the colour follows the key");
+        std::set<int> pcs;
+        for (auto note : chord.notes)
+            pcs.insert (note % 12);
+        expect (pcs == std::set<int> { 7, 11, 2, 6 }, "Gmaj7 notes");
+
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        expect (reloaded.hasPadColour (3) && reloaded.getChordForDegree (3).name == "Gmaj7", "pad colour survives a reload");
+        expect (! reloaded.hasPadColour (0), "other pads keep their scale chords");
+
+        processor.clearPadColour (3);
+        expect (! processor.hasPadColour (3) && processor.getChordForDegree (3).name == "G", "back to the scale chord");
+        setParam (processor, "key", 0.0f);
     }
 
     // State round trip.

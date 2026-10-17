@@ -57,6 +57,14 @@ public:
     // Called from the editor (message thread) when a chord pad is pressed or released.
     void setPadPressed (int degree, bool pressed);
 
+    // A colour chord put on a pad in place of the scale chord. It is kept
+    // relative to the key (root offset and intervals), so it follows key
+    // changes and plays from MIDI keys like the other pads.
+    void setPadColour (int degree, const madscaler::ColourChord& chord);
+    void clearPadColour (int degree);
+    bool hasPadColour (int degree) const;
+    int getPadColourVersion() const { return padColourVersion.load(); }
+
     // Called from the editor when a key of the on-screen keyboard is pressed or
     // released. The note is treated exactly like incoming MIDI.
     void setKeyboardNotePressed (int midiNote, bool pressed);
@@ -76,7 +84,8 @@ public:
 
     // Colours for a degree's chord, with the current key, scale, size, octave and
     // voicing applied. previousNotes is used for voice leading.
-    std::vector<madscaler::ColourGroup> getColoursForDegree (int degree, const std::vector<int>& previousNotes = {}) const;
+    std::vector<madscaler::ColourGroup> getColoursForDegree (int degree, const std::vector<int>& previousNotes = {},
+                                                             bool voiced = true) const;
 
     // A Circle of Fifths triad in the current octave, voiced like the pads.
     madscaler::ColourChord getCircleChord (int position, bool minor, const std::vector<int>& previousNotes = {}) const;
@@ -228,6 +237,13 @@ private:
     std::array<UiEvent, 256> uiEvents {};
 
     std::array<HeldChord, numDegrees> padChords {};
+
+    // Pad colours: bit 31 set when used, bits 24-27 the root above the key,
+    // bits 0-23 the chord's intervals above its root.
+    std::array<std::atomic<uint32_t>, numDegrees> padColours {};
+    std::array<std::string, numDegrees> padColourSuffixes; // e.g. "maj9"; guarded by padColourLock
+    mutable juce::SpinLock padColourLock;
+    std::atomic<int> padColourVersion { 0 };
     std::array<HeldChord, maxDetectedChords> detectedChordsHeld {};
     std::array<HeldChord, 128> keyChords {}; // indexed by the incoming MIDI note
     std::array<std::array<int, 128>, 16> noteRefCount {};

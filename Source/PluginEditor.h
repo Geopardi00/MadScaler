@@ -27,6 +27,8 @@ namespace madscaler::ui
 
         // Called when the pad is pressed, with its scale degree.
         std::function<void (int)> onPressed;
+        // Called from the right-click menu to put the scale chord back.
+        std::function<void (int)> onResetColour;
 
     private:
         MadScalerProcessor& processor;
@@ -107,6 +109,8 @@ namespace madscaler::ui
         void mouseUp (const juce::MouseEvent&) override;
 
         std::function<void (int id, const madscaler::ColourChord&)> onPressed;
+        // Right-click, for the menu that puts the chord on a pad.
+        std::function<void (int id)> onMenu;
 
     private:
         MadScalerProcessor& processor;
@@ -165,8 +169,12 @@ namespace madscaler::ui
 
         // Called when a chord is pressed, with its name and notes.
         std::function<void (const std::string&, const std::vector<int>&)> onChordPressed;
+        // Called from a colour's right-click menu: put this chord on that pad.
+        std::function<void (int degree, const madscaler::ColourChord&)> onPutOnPad;
 
     private:
+        void showChipMenu (int id);
+
         MadScalerProcessor& processor;
         int degree = 0;
         std::vector<madscaler::ColourGroup> groups;
@@ -612,6 +620,7 @@ private:
     juce::TextButton coloursTab { "Colours" }, libraryTab { "Library" }, detectTab { "Detect" }, melodyTab { "Melody" },
                      bassTab { "Bass" };
     int lastSuggestedDegree = -2;
+    int lastPadColourVersion = -1;
     madscaler::ui::ProgressionStrip progressionStrip;
     madscaler::ui::LibraryPanel libraryPanel;
     madscaler::ui::MelodyPanel melodyPanel;
