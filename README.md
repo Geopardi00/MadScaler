@@ -8,7 +8,7 @@ them to any synth in your DAW: MadScaler has no sounds of its own.
 This is an independent project. It is not affiliated with, and contains no
 code, presets or assets from, any commercial chord plugin.
 
-## Features (v0.8)
+## Features (v0.9)
 
 - Key picker (all 12 keys) and 11 seven-note scales: Major, Natural/Harmonic/
   Melodic Minor, the modes, Harmonic Major and Phrygian Dominant.
@@ -82,9 +82,29 @@ code, presets or assets from, any commercial chord plugin.
   "New melody" invents another one. With "Play along" on, the melody plays
   with the progression on its own MIDI channel (2 by default), so it can go
   to a different synth. "Drag melody" or "Export" saves it as MIDI.
-- Settings, the progression and the melody are saved with your DAW project.
+  "Humanise" nudges timing and loudness a little so it sounds played.
+- Bass tab: "Get chords" (or "To Melody") writes a bassline for the
+  progression in one of 10 styles: whole notes, quarter roots, pumping
+  eighths, root and fifth, root-fifth-octave, octaves, walking (heads for the
+  next chord's root), syncopated, offbeat octave and dotted. Pick a range
+  (E1, C2 or C3), note length, swing and humanise, and turn on lead-in notes
+  that step into each chord change. The bass plays on its own MIDI channel
+  (3 by default) with "Play along", has the same note editor (choose Bass
+  in it), and drags or exports as MIDI.
+- Colour chords on pads: right-click a colour (e.g. Cmaj9) and put it on
+  that pad or another one. The pad shows a "colour" tag and keeps the colour
+  when you change key. Right-click the pad to go back to the scale chord.
+- Edit the notes of a progression chord: right-click it, "Edit notes...",
+  and click keys to add or remove notes. The chord is renamed as you go.
+  Octave up/down, Invert and Play buttons help.
+- Sections A to D: each holds its own progression (say verse, chorus,
+  bridge). Click a letter to switch; right-click it to copy chords from
+  another section or clear it. Empty sections are dimmed. Turn on "Chain" to
+  play, export, drag and send to Melody/Bass all sections in a row.
+- Settings, the progression sections, pad colours, the melody and the bass
+  are saved with your DAW project.
 
-Next up: basslines, swing and polish.
+Next up: UI scaling and themes.
 
 ## Download
 
@@ -121,7 +141,8 @@ The VST3 ends up in `build/MadScaler_artefacts/Release/VST3/`.
 - `Source/ChordLibrary.*` the progression library and its Roman numeral parser.
 - `Source/MelodyMaker.*` scale suggestions for chords, rhythm patterns,
   melodies and arpeggios.
+- `Source/BassMaker.*` basslines, swing and humanise.
 - `Source/PluginProcessor.*` turns pad presses and MIDI input into MIDI chords.
 - `Source/PluginEditor.*` the user interface.
 - `tests/` unit tests for the theory code, chord detection, voicings,
-  patterns, progressions, chord colours, the library, MelodyMaker and the processor's MIDI output.
+  patterns, progressions, chord colours, the library, MelodyMaker, basslines and the processor's MIDI output.

@@ -2,6 +2,7 @@
 #include "PluginProcessor.h"
 
 #include <iostream>
+#include <set>
 #include <vector>
 
 static int failures = 0;
@@ -287,6 +288,52 @@ int main()
                 "progression survives a save and reload");
     }
 
+    // Sections: A and B hold their own progressions; chaining plays A then B.
+    {
+        MadScalerProcessor sectioned;
+        sectioned.prepareToPlay (48000.0, 256);
+        madscaler::Progression verse, chorus;
+        verse.slots.push_back ({ "C", { 60, 64, 67 }, 4.0 });
+        chorus.slots.push_back ({ "F", { 53, 57, 60 }, 4.0 });
+        sectioned.setProgression (verse);
+        sectioned.selectSection (1);
+        expect (sectioned.getCurrentSection() == 1 && sectioned.getProgression().slots.empty(), "section B starts empty");
+        sectioned.setProgression (chorus);
+        sectioned.selectSection (0);
+        expect (sectioned.getProgression().slots.size() == 1 && sectioned.getProgression().slots[0].name == "C",
+                "section A keeps its chords");
+        expect (sectioned.getSection (1).slots[0].name == "F", "section B keeps its chords");
+
+        sectioned.setChainSections (true);
+        expect (sectioned.getPlaybackProgression().slots.size() == 2, "chaining joins A and B");
+        sectioned.setProgressionPlaying (true);
+        std::vector<Note> first, second;
+        for (int block = 0; block < 375; ++block)
+            for (const auto& note : runBlock (sectioned))
+                first.push_back (note);
+        expect (hasNotes (first, true, { 60, 64, 67 }) && sectioned.getPlayingSection() == 0, "chain starts with A");
+        for (int block = 0; block < 10; ++block)
+            for (const auto& note : runBlock (sectioned))
+                second.push_back (note);
+        expect (hasNotes (second, true, { 53, 57 }) && sectioned.getPlayingSection() == 1, "then plays B");
+        expect (sectioned.getCurrentProgressionSlot() == -1, "B's chord is not highlighted while A is on screen");
+        sectioned.setProgressionPlaying (false);
+        runBlock (sectioned);
+
+        sectioned.copySection (0, 2);
+        expect (sectioned.getSection (2).slots.size() == 1 && sectioned.getSection (2).slots[0].name == "C", "copy A to C");
+        sectioned.clearSection (2);
+        expect (sectioned.getSection (2).slots.empty(), "clear C");
+
+        juce::MemoryBlock saved;
+        sectioned.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        expect (reloaded.getSection (1).slots.size() == 1 && reloaded.getSection (1).slots[0].notes == std::vector<int> { 53, 57, 60 }
+                    && reloaded.isChainingSections() && reloaded.getCurrentSection() == 0,
+                "sections survive a reload");
+    }
+
     // MelodyMaker: the melody plays along with the progression on its own channel.
     {
         madscaler::Progression progression;
@@ -330,6 +377,114 @@ int main()
                     && std::abs (restoredMelody.totalBeats - 4.0) < 1.0e-9,
                 "melody survives a save and reload");
         processor.setProgression ({});
+    }
+
+    // Bass: off until switched on, then plays on channel 3 next to the melody.
+    {
+        madscaler::Progression progression;
+        progression.slots.push_back ({ "C", { 60, 64, 67 }, 4.0 });
+        processor.setProgression (progression);
+
+        MadScalerProcessor::MelodyState melody;
+        melody.chords = progression.slots;
+        melody.notes = { { 0.0, 1.0, 72, 100 } };
+        melody.bass.style = madscaler::BassStyle::rootFifth;
+        melody.bass.leadIn = true;
+        melody.bassNotes = { { 0.0, 2.0, 36, 100 }, { 2.0, 2.0, 43, 100 } };
+        melody.totalBeats = 4.0;
+        processor.setMelodyState (melody);
+        processor.setMelodyPlaying (true);
+        expect (! processor.isBassPlaying(), "bass is off by default");
+
+        auto playFor = [&processor] (int blocks)
+        {
+            std::vector<Note> result;
+            for (int block = 0; block < blocks; ++block)
+                for (const auto& note : runBlock (processor))
+                    result.push_back (note);
+            return result;
+        };
+
+        processor.setProgressionPlaying (true);
+        auto played = playFor (200);
+        bool anyBass = false;
+        for (const auto& note : played)
+            anyBass = anyBass || note.channel == 3;
+        expect (! anyBass, "no bass while it is off");
+
+        processor.setProgressionPlaying (false);
+        playFor (2);
+        processor.setBassPlaying (true);
+        processor.setProgressionPlaying (true);
+        played = playFor (370);
+        std::vector<Note> bassNotes, melodyNotes;
+        for (const auto& note : played)
+        {
+            if (note.channel == 3) bassNotes.push_back (note);
+            if (note.channel == 2) melodyNotes.push_back (note);
+        }
+        expect (hasNotes (bassNotes, true, { 36, 43 }), "bass plays on channel 3");
+        expect (hasNotes (melodyNotes, true, { 72 }), "melody still plays on channel 2");
+
+        // Switching the bass off mid-note releases it.
+        processor.setProgressionPlaying (false);
+        playFor (2);
+        processor.setProgressionPlaying (true);
+        playFor (10);
+        processor.setBassPlaying (false);
+        const auto released = playFor (1);
+        bool bassOff = false;
+        for (const auto& note : released)
+            bassOff = bassOff || (note.channel == 3 && ! note.on && note.number == 36);
+        expect (bassOff, "switching the bass off releases its note");
+        processor.setProgressionPlaying (false);
+        playFor (2);
+
+        processor.setBassPlaying (true);
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        const auto& restored = reloaded.getMelodyState();
+        expect (restored.bassNotes.size() == 2 && restored.bassNotes[1].note == 43 && restored.bass.leadIn
+                    && restored.bass.style == madscaler::BassStyle::rootFifth && reloaded.isBassPlaying(),
+                "bass survives a save and reload");
+        processor.setBassPlaying (false);
+        processor.setProgression ({});
+    }
+
+    // A colour chord on a pad follows the key and survives a reload.
+    {
+        setParam (processor, "key", 0.0f);
+        setParam (processor, "scale", 0.0f);
+        setParam (processor, "chordSize", 0.0f);
+        madscaler::ColourChord maj7;
+        maj7.name = "Fmaj7";
+        maj7.rootPitchClass = 5;
+        maj7.notes = { 65, 69, 72, 76 };
+        processor.setPadColour (3, maj7);
+        expect (processor.hasPadColour (3), "pad IV has a colour");
+        auto chord = processor.getChordForDegree (3);
+        expect (chord.name == "Fmaj7" && chord.notes.size() == 4, "pad IV plays Fmaj7");
+
+        setParam (processor, "key", 2.0f); // D major: IV is G
+        chord = processor.getChordForDegree (3);
+        expect (chord.name == "Gmaj7", "the colour follows the key");
+        std::set<int> pcs;
+        for (auto note : chord.notes)
+            pcs.insert (note % 12);
+        expect (pcs == std::set<int> { 7, 11, 2, 6 }, "Gmaj7 notes");
+
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        expect (reloaded.hasPadColour (3) && reloaded.getChordForDegree (3).name == "Gmaj7", "pad colour survives a reload");
+        expect (! reloaded.hasPadColour (0), "other pads keep their scale chords");
+
+        processor.clearPadColour (3);
+        expect (! processor.hasPadColour (3) && processor.getChordForDegree (3).name == "G", "back to the scale chord");
+        setParam (processor, "key", 0.0f);
     }
 
     // State round trip.

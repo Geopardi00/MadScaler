@@ -1,4 +1,5 @@
 #include "MelodyMaker.h"
+#include "BassMaker.h"
 #include "ChordDetector.h"
 #include "ChordEngine.h"
 
@@ -445,6 +446,7 @@ namespace madscaler
             }
 
             applySwing (notes);
+            humaniseNotes (notes, settings.humanise, total, settings.seed);
             return notes;
         }
 
@@ -549,6 +551,7 @@ namespace madscaler
         }
 
         applySwing (notes);
+        humaniseNotes (notes, settings.humanise, total, settings.seed);
         return notes;
     }
 } // namespace madscaler

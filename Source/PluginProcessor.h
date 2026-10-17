@@ -3,6 +3,7 @@
 #include "ChordColours.h"
 #include "ChordDetector.h"
 #include "ChordLibrary.h"
+#include "BassMaker.h"
 #include "MelodyMaker.h"
 #include "ChordEngine.h"
 #include "PatternEngine.h"
@@ -56,6 +57,14 @@ public:
     // Called from the editor (message thread) when a chord pad is pressed or released.
     void setPadPressed (int degree, bool pressed);
 
+    // A colour chord put on a pad in place of the scale chord. It is kept
+    // relative to the key (root offset and intervals), so it follows key
+    // changes and plays from MIDI keys like the other pads.
+    void setPadColour (int degree, const madscaler::ColourChord& chord);
+    void clearPadColour (int degree);
+    bool hasPadColour (int degree) const;
+    int getPadColourVersion() const { return padColourVersion.load(); }
+
     // Called from the editor when a key of the on-screen keyboard is pressed or
     // released. The note is treated exactly like incoming MIDI.
     void setKeyboardNotePressed (int midiNote, bool pressed);
@@ -75,7 +84,8 @@ public:
 
     // Colours for a degree's chord, with the current key, scale, size, octave and
     // voicing applied. previousNotes is used for voice leading.
-    std::vector<madscaler::ColourGroup> getColoursForDegree (int degree, const std::vector<int>& previousNotes = {}) const;
+    std::vector<madscaler::ColourGroup> getColoursForDegree (int degree, const std::vector<int>& previousNotes = {},
+                                                             bool voiced = true) const;
 
     // A Circle of Fifths triad in the current octave, voiced like the pads.
     madscaler::ColourChord getCircleChord (int position, bool minor, const std::vector<int>& previousNotes = {}) const;
@@ -93,6 +103,10 @@ public:
         madscaler::MelodySettings settings;
         std::vector<madscaler::TimedNote> notes;
         double totalBeats = 0.0;
+
+        // The bassline over the same chords, on the bass channel.
+        madscaler::BassSettings bass;
+        std::vector<madscaler::TimedNote> bassNotes;
     };
 
     const MelodyState& getMelodyState() const { return melodyState; }
@@ -104,8 +118,12 @@ public:
     void setMelodyPlaying (bool shouldPlay) { melodyPlaying.store (shouldPlay); }
     bool isMelodyPlaying() const { return melodyPlaying.load(); }
 
-    // Plays one note on the melody channel, to hear a note while editing it.
-    void setMelodyNotePressed (int midiNote, bool pressed);
+    // While on, the bassline plays along with the progression on the bass channel.
+    void setBassPlaying (bool shouldPlay) { bassPlaying.store (shouldPlay); }
+    bool isBassPlaying() const { return bassPlaying.load(); }
+
+    // Plays one note on the melody (or bass) channel, to hear a note while editing it.
+    void setMelodyNotePressed (int midiNote, bool pressed, bool bass = false);
 
     // MIDI notes currently held on MadScaler's input (keyboard, DAW track or
     // on-screen keys), excluding keys used to trigger chords. Safe to call from any thread.
@@ -124,8 +142,28 @@ public:
     void setProgressionPlaying (bool shouldPlay) { progressionPlaying.store (shouldPlay); }
     bool isProgressionPlaying() const { return progressionPlaying.load(); }
 
-    // Index of the progression chord sounding now, or -1.
-    int getCurrentProgressionSlot() const { return currentProgressionSlot.load(); }
+    // Index of the progression chord sounding now in the section on screen, or -1.
+    int getCurrentProgressionSlot() const;
+
+    // Sections (A to D), each its own progression, e.g. verse and chorus.
+    // getProgression() is always the selected section.
+    static constexpr int numSections = 4;
+    int getCurrentSection() const { return currentSection; }
+    void selectSection (int section);
+    const madscaler::Progression& getSection (int section) const;
+    void copySection (int from, int to);
+    void clearSection (int section);
+
+    // While on, playback, export and To Melody run every section that has
+    // chords, one after another (A B C D).
+    void setChainSections (bool shouldChain);
+    bool isChainingSections() const { return chainSections; }
+
+    // What plays: the selected section, or all sections chained.
+    madscaler::Progression getPlaybackProgression() const;
+
+    // The section playing now (useful while chaining), or -1.
+    int getPlayingSection() const { return playingSection.load(); }
 
     // The pattern currently selected, or nullopt when Pattern is Off.
     std::optional<madscaler::PatternSettings> getPatternSettings() const;
@@ -197,12 +235,13 @@ private:
     std::atomic<float>* strumParam = nullptr;
     std::atomic<float>* keysLockParam = nullptr;
     std::atomic<float>* melodyChannelParam = nullptr;
+    std::atomic<float>* bassChannelParam = nullptr;
 
     // Clicks in the editor travel from the message thread to the audio thread
     // through a lock-free single-producer single-consumer queue.
     struct UiEvent
     {
-        enum class Kind { pad, keyboardNote, detectedChord, colourChord, melodyNote };
+        enum class Kind { pad, keyboardNote, detectedChord, colourChord, melodyNote, bassNote };
 
         Kind kind = Kind::pad;
         int index = 0; // degree, MIDI note, detected chord slot or colour chord id
@@ -218,6 +257,13 @@ private:
     std::array<UiEvent, 256> uiEvents {};
 
     std::array<HeldChord, numDegrees> padChords {};
+
+    // Pad colours: bit 31 set when used, bits 24-27 the root above the key,
+    // bits 0-23 the chord's intervals above its root.
+    std::array<std::atomic<uint32_t>, numDegrees> padColours {};
+    std::array<std::string, numDegrees> padColourSuffixes; // e.g. "maj9"; guarded by padColourLock
+    mutable juce::SpinLock padColourLock;
+    std::atomic<int> padColourVersion { 0 };
     std::array<HeldChord, maxDetectedChords> detectedChordsHeld {};
     std::array<HeldChord, 128> keyChords {}; // indexed by the incoming MIDI note
     std::array<std::array<int, 128>, 16> noteRefCount {};
@@ -258,16 +304,23 @@ private:
             int numNotes = 0;
             std::array<int, maxChordNotes> notes {};
             double lengthBeats = 4.0;
+            int section = 0;
+            int index = 0; // position within its section
         };
 
         int numSlots = 0;
-        std::array<Slot, madscaler::Progression::maxSlots> slots {};
+        std::array<Slot, madscaler::Progression::maxSlots * numSections> slots {};
         double totalBeats = 0.0;
 
         int slotAt (double beat) const;
     };
 
     madscaler::Progression progression;
+    std::array<madscaler::Progression, numSections> sections;
+    int currentSection = 0;
+    bool chainSections = false;
+    std::atomic<int> playingSection { -1 };
+    void updateProgressionSnapshot();
     juce::SpinLock progressionLock;
     ProgressionSnapshot pendingSnapshot;
     std::atomic<bool> snapshotChanged { false };
@@ -283,12 +336,13 @@ private:
     // Melody playback, swapped in like the progression snapshot.
     struct MelodySnapshot
     {
-        static constexpr int maxNotes = 512;
+        static constexpr int maxNotes = 1024;
 
         struct Note
         {
             double start = 0.0, length = 0.0;
             int note = 60, velocity = 100;
+            bool bass = false;
         };
 
         int numNotes = 0;
@@ -300,6 +354,7 @@ private:
     {
         int note = 0, channel = 1;
         double endBeat = 0.0;
+        bool bass = false;
     };
 
     MelodyState melodyState;
@@ -307,6 +362,7 @@ private:
     MelodySnapshot pendingMelody, audioMelody;
     std::atomic<bool> melodyChanged { false };
     std::atomic<bool> melodyPlaying { true };
+    std::atomic<bool> bassPlaying { false };
     std::array<ActiveMelodyNote, 32> activeMelodyNotes {};
     int numActiveMelodyNotes = 0;
     double lastMelodyEndBeat = -1.0;

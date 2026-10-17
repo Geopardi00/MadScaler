@@ -105,6 +105,7 @@ namespace madscaler
 
         int gate = 1;           // 0 staccato, 1 normal, 2 legato
         int swing = 0;          // 0 none, 1 light, 2 medium, 3 heavy
+        int humanise = 0;       // 0 none ... 3 loose timing and velocity
         Accent accent = Accent::beats;
 
         // Arpeggio only.
