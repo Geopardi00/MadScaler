@@ -20,6 +20,7 @@ namespace ParamIDs
     static const juce::String arpOctaves { "arpOctaves" };
     static const juce::String strum { "strum" };
     static const juce::String keysLock { "keysLock" };
+    static const juce::String melodyChannel { "melodyChannel" };
 }
 
 MadScalerProcessor::MadScalerProcessor()
@@ -43,6 +44,7 @@ MadScalerProcessor::MadScalerProcessor()
     arpOctavesParam = parameters.getRawParameterValue (ParamIDs::arpOctaves);
     strumParam = parameters.getRawParameterValue (ParamIDs::strum);
     keysLockParam = parameters.getRawParameterValue (ParamIDs::keysLock);
+    melodyChannelParam = parameters.getRawParameterValue (ParamIDs::melodyChannel);
 
     for (auto& channelMap : keysLockMap)
         channelMap.fill (-1);
@@ -86,6 +88,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createPa
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::strum, 1 }, "Strum Time", 5, 150, 30,
                                                      AudioParameterIntAttributes().withLabel ("ms")));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::keysLock, 1 }, "Keys Lock", false));
+    layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::melodyChannel, 1 }, "Melody MIDI Channel", 1, 16, 2));
     return layout;
 }
 
@@ -246,6 +249,15 @@ void MadScalerProcessor::setColourChordPressed (int id, const std::vector<int>& 
     event.numNotes = juce::jmin ((int) notes.size(), maxChordNotes);
     for (int i = 0; i < event.numNotes; ++i)
         event.notes[(size_t) i] = juce::jlimit (0, 127, notes[(size_t) i]);
+    pushUiEvent (event);
+}
+
+void MadScalerProcessor::setMelodyNotePressed (int midiNote, bool pressed)
+{
+    UiEvent event;
+    event.kind = UiEvent::Kind::melodyNote;
+    event.index = juce::jlimit (0, 127, midiNote);
+    event.pressed = pressed;
     pushUiEvent (event);
 }
 
@@ -558,6 +570,7 @@ void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
 
     if (! playing)
     {
+        stopMelodyNotes (out, 0);
         if (wasProgressionPlaying)
             setSlot (-1, 0);
         wasProgressionPlaying = false;
@@ -598,10 +611,122 @@ void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
         }
     }
 
+    if (melodyPlaying.load())
+        playMelody (startBeat, endBeat, beatsPerSample, numSamples, out);
+    else
+        stopMelodyNotes (out, 0);
+
     if (! hostPlaying)
         freeProgressionBeats = endBeat;
 
     currentProgressionSlot.store (playingSlot);
+}
+
+void MadScalerProcessor::setMelodyState (const MelodyState& newState)
+{
+    melodyState = newState;
+    ++melodyStateVersion;
+
+    MelodySnapshot snapshot;
+    snapshot.totalBeats = newState.totalBeats;
+    for (const auto& note : newState.notes)
+    {
+        if (snapshot.numNotes == MelodySnapshot::maxNotes)
+            break;
+        snapshot.notes[(size_t) snapshot.numNotes++] = { note.startBeat, note.lengthBeats,
+                                                         juce::jlimit (0, 127, note.note), juce::jlimit (1, 127, note.velocity) };
+    }
+
+    const juce::SpinLock::ScopedLockType lock (progressionLock);
+    pendingMelody = snapshot;
+    melodyChanged.store (true);
+}
+
+void MadScalerProcessor::stopMelodyNotes (juce::MidiBuffer& out, int samplePos)
+{
+    for (int i = 0; i < numActiveMelodyNotes; ++i)
+        out.addEvent (juce::MidiMessage::noteOff (activeMelodyNotes[(size_t) i].channel, activeMelodyNotes[(size_t) i].note), samplePos);
+    numActiveMelodyNotes = 0;
+    lastMelodyEndBeat = -1.0;
+}
+
+void MadScalerProcessor::playMelody (double startBeat, double endBeat, double beatsPerSample, int numSamples, juce::MidiBuffer& out)
+{
+    if (melodyChanged.load())
+    {
+        const juce::SpinLock::ScopedTryLockType lock (progressionLock);
+        if (lock.isLocked())
+        {
+            audioMelody = pendingMelody;
+            melodyChanged.store (false);
+            stopMelodyNotes (out, 0);
+        }
+    }
+
+    // A jump in the DAW's position: release what is sounding and carry on from there.
+    if (lastMelodyEndBeat >= 0.0 && std::abs (startBeat - lastMelodyEndBeat) > 0.01)
+        stopMelodyNotes (out, 0);
+    lastMelodyEndBeat = endBeat;
+
+    auto samplePosFor = [&] (double beat)
+    {
+        return juce::jlimit (0, numSamples - 1, (int) std::ceil ((beat - startBeat) / beatsPerSample - 1.0e-6));
+    };
+
+    // Note-offs due in this block.
+    for (int i = 0; i < numActiveMelodyNotes;)
+    {
+        auto& active = activeMelodyNotes[(size_t) i];
+        if (active.endBeat < endBeat)
+        {
+            out.addEvent (juce::MidiMessage::noteOff (active.channel, active.note), samplePosFor (active.endBeat));
+            active = activeMelodyNotes[(size_t) --numActiveMelodyNotes];
+        }
+        else
+        {
+            ++i;
+        }
+    }
+
+    const auto total = audioMelody.totalBeats;
+    if (audioMelody.numNotes == 0 || total <= 0.0)
+        return;
+
+    const auto channel = juce::jlimit (1, 16, (int) melodyChannelParam->load());
+
+    // Note-ons starting in this block, looping over the melody's length.
+    for (auto loop = std::floor (startBeat / total); loop * total < endBeat; loop += 1.0)
+    {
+        for (int i = 0; i < audioMelody.numNotes; ++i)
+        {
+            const auto& note = audioMelody.notes[(size_t) i];
+            const auto start = loop * total + note.start;
+            if (start < startBeat - 1.0e-9 || start >= endBeat - 1.0e-9)
+                continue;
+
+            const auto onPos = samplePosFor (start);
+
+            // The same pitch still sounding is released first.
+            for (int a = 0; a < numActiveMelodyNotes; ++a)
+            {
+                if (activeMelodyNotes[(size_t) a].note == note.note)
+                {
+                    out.addEvent (juce::MidiMessage::noteOff (activeMelodyNotes[(size_t) a].channel, note.note), onPos);
+                    activeMelodyNotes[(size_t) a] = activeMelodyNotes[(size_t) --numActiveMelodyNotes];
+                    break;
+                }
+            }
+
+            out.addEvent (juce::MidiMessage::noteOn (channel, note.note, (juce::uint8) note.velocity), onPos);
+
+            const auto end = start + note.length;
+            if (end < endBeat)
+                out.addEvent (juce::MidiMessage::noteOff (channel, note.note),
+                              juce::jmin (numSamples - 1, juce::jmax (onPos + 1, samplePosFor (end))));
+            else if (numActiveMelodyNotes < (int) activeMelodyNotes.size())
+                activeMelodyNotes[(size_t) numActiveMelodyNotes++] = { note.note, channel, end };
+        }
+    }
 }
 
 int MadScalerProcessor::applyKeysLock (const juce::MidiMessage& message, juce::MidiMessage& result)
@@ -740,6 +865,15 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                         break;
                     }
 
+                    case UiEvent::Kind::melodyNote:
+                    {
+                        const auto melodyChannel = juce::jlimit (1, 16, (int) melodyChannelParam->load());
+                        out.addEvent (event.pressed ? juce::MidiMessage::noteOn (melodyChannel, event.index, velocity)
+                                                    : juce::MidiMessage::noteOff (melodyChannel, event.index),
+                                      0);
+                        break;
+                    }
+
                     case UiEvent::Kind::keyboardNote:
                         midi.addEvent (event.pressed ? juce::MidiMessage::noteOn (channel, event.index, velocity)
                                                      : juce::MidiMessage::noteOff (channel, event.index),
@@ -827,6 +961,48 @@ void MadScalerProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.removeChild (state.getChildWithName ("Progression"), nullptr);
     state.appendChild (progressionTree, nullptr);
 
+    juce::ValueTree melodyTree ("Melody");
+    const auto& settings = melodyState.settings;
+    melodyTree.setProperty ("mode", (int) settings.mode, nullptr);
+    melodyTree.setProperty ("rhythm", settings.rhythm, nullptr);
+    melodyTree.setProperty ("arpStyle", (int) settings.arpStyle, nullptr);
+    melodyTree.setProperty ("density", settings.density, nullptr);
+    melodyTree.setProperty ("low", settings.lowNote, nullptr);
+    melodyTree.setProperty ("high", settings.highNote, nullptr);
+    melodyTree.setProperty ("key", settings.keyPitchClass, nullptr);
+    melodyTree.setProperty ("scale", settings.scaleIndex, nullptr);
+    melodyTree.setProperty ("seed", (int) settings.seed, nullptr);
+    melodyTree.setProperty ("gate", settings.gate, nullptr);
+    melodyTree.setProperty ("swing", settings.swing, nullptr);
+    melodyTree.setProperty ("accent", (int) settings.accent, nullptr);
+    melodyTree.setProperty ("arpOctaves", settings.arpOctaves, nullptr);
+    melodyTree.setProperty ("arpNotes", (int) settings.arpNotes, nullptr);
+    melodyTree.setProperty ("variation", settings.variation, nullptr);
+    melodyTree.setProperty ("bassNote", settings.bassNote, nullptr);
+    melodyTree.setProperty ("keepFlowing", settings.keepFlowing, nullptr);
+    melodyTree.setProperty ("total", melodyState.totalBeats, nullptr);
+    melodyTree.setProperty ("playing", melodyPlaying.load(), nullptr);
+
+    juce::StringArray melodyNotes;
+    for (const auto& note : melodyState.notes)
+        melodyNotes.add (juce::String (note.startBeat) + ":" + juce::String (note.lengthBeats) + ":"
+                         + juce::String (note.note) + ":" + juce::String (note.velocity));
+    melodyTree.setProperty ("notes", melodyNotes.joinIntoString (" "), nullptr);
+
+    for (const auto& slot : melodyState.chords)
+    {
+        juce::StringArray notes;
+        for (auto note : slot.notes)
+            notes.add (juce::String (note));
+        juce::ValueTree chordTree ("Chord");
+        chordTree.setProperty ("name", juce::String::fromUTF8 (slot.name.c_str()), nullptr);
+        chordTree.setProperty ("notes", notes.joinIntoString (" "), nullptr);
+        chordTree.setProperty ("beats", slot.lengthBeats, nullptr);
+        melodyTree.appendChild (chordTree, nullptr);
+    }
+    state.removeChild (state.getChildWithName ("Melody"), nullptr);
+    state.appendChild (melodyTree, nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -852,9 +1028,58 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
         restored.slots.push_back (slot);
     }
 
+    MelodyState melody;
+    const auto melodyTree = state.getChildWithName ("Melody");
+    if (melodyTree.isValid())
+    {
+        auto& settings = melody.settings;
+        settings.mode = (madscaler::MelodyMode) juce::jlimit (0, 1, (int) melodyTree.getProperty ("mode", 0));
+        settings.rhythm = (int) melodyTree.getProperty ("rhythm", 0);
+        settings.arpStyle = (madscaler::ArpStyle) juce::jlimit (0, (int) madscaler::getArpStyleNames().size() - 1,
+                                                                (int) melodyTree.getProperty ("arpStyle", 0));
+        settings.density = (int) melodyTree.getProperty ("density", 1);
+        settings.lowNote = (int) melodyTree.getProperty ("low", 60);
+        settings.highNote = (int) melodyTree.getProperty ("high", 79);
+        settings.keyPitchClass = (int) melodyTree.getProperty ("key", 0);
+        settings.scaleIndex = (int) melodyTree.getProperty ("scale", 0);
+        settings.seed = (uint32_t) (int) melodyTree.getProperty ("seed", 1);
+        settings.gate = juce::jlimit (0, 2, (int) melodyTree.getProperty ("gate", 1));
+        settings.swing = juce::jlimit (0, 3, (int) melodyTree.getProperty ("swing", 0));
+        settings.accent = (madscaler::Accent) juce::jlimit (0, 3, (int) melodyTree.getProperty ("accent", 0));
+        settings.arpOctaves = juce::jlimit (1, 4, (int) melodyTree.getProperty ("arpOctaves", 2));
+        settings.arpNotes = (madscaler::ArpNotes) juce::jlimit (0, (int) madscaler::getArpNotesNames().size() - 1,
+                                                                (int) melodyTree.getProperty ("arpNotes", 0));
+        settings.variation = juce::jlimit (0, 3, (int) melodyTree.getProperty ("variation", 0));
+        settings.bassNote = (bool) melodyTree.getProperty ("bassNote", false);
+        settings.keepFlowing = (bool) melodyTree.getProperty ("keepFlowing", false);
+        melody.totalBeats = (double) melodyTree.getProperty ("total", 0.0);
+        melodyPlaying.store ((bool) melodyTree.getProperty ("playing", true));
+
+        for (const auto& token : juce::StringArray::fromTokens (melodyTree.getProperty ("notes").toString(), " ", ""))
+        {
+            const auto parts = juce::StringArray::fromTokens (token, ":", "");
+            if (parts.size() == 4)
+                melody.notes.push_back ({ parts[0].getDoubleValue(), parts[1].getDoubleValue(),
+                                          parts[2].getIntValue(), parts[3].getIntValue() });
+        }
+
+        for (const auto& chordTree : melodyTree)
+        {
+            madscaler::ProgressionSlot slot;
+            slot.name = chordTree.getProperty ("name").toString().toStdString();
+            for (const auto& token : juce::StringArray::fromTokens (chordTree.getProperty ("notes").toString(), " ", ""))
+                if (token.isNotEmpty())
+                    slot.notes.push_back (token.getIntValue());
+            slot.lengthBeats = (double) chordTree.getProperty ("beats", 4.0);
+            melody.chords.push_back (slot);
+        }
+    }
+
     state.removeChild (progressionTree, nullptr);
+    state.removeChild (melodyTree, nullptr);
     parameters.replaceState (state);
     setProgression (restored);
+    setMelodyState (melody);
 }
 
 juce::AudioProcessorEditor* MadScalerProcessor::createEditor()
