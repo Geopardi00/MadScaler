@@ -777,7 +777,7 @@ namespace madscaler::ui
             processor.setProgression ({});
         };
         exportButton.onClick = [this] { exportMidi(); };
-        melodyButton.setTooltip ("Send these chords to the Melody tab, to make a melody or arpeggio over them");
+        melodyButton.setTooltip ("Send these chords to the Melody and Bass tabs, to make a melody, arpeggio and bassline over them");
         melodyButton.onClick = [this]
         {
             if (onSendToMelody)
@@ -1360,13 +1360,13 @@ namespace madscaler::ui
         setParam ("scale", suggestions[index].scaleIndex);
     }
 
-    void MelodyRoll::setMelody (const MadScalerProcessor::MelodyState& state)
+    void MelodyRoll::setMelody (const MadScalerProcessor::MelodyState& state, bool bass)
     {
         chords = state.chords;
-        notes = state.notes;
+        notes = bass ? state.bassNotes : state.notes;
         totalBeats = state.totalBeats;
-        lowNote = state.settings.lowNote;
-        highNote = state.settings.highNote;
+        lowNote = bass ? state.bass.lowNote : state.settings.lowNote;
+        highNote = bass ? state.bass.lowNote + 19 : state.settings.highNote;
         for (const auto& note : notes)
         {
             lowNote = juce::jmin (lowNote, note.note);
@@ -1469,9 +1469,11 @@ namespace madscaler::ui
         accentBox.setTooltip ("Which notes are louder. Every 3rd makes an accent pattern across the beat; Rising grows through each chord.");
         swingBox.addItemList ({ "No swing", "Light swing", "Medium swing", "Heavy swing" }, 1);
         swingBox.setTooltip ("Pushes off-beat eighths and sixteenths late for a shuffled feel");
+        humaniseBox.addItemList ({ "Exact", "Humanise a bit", "Humanise more", "Loose" }, 1);
+        humaniseBox.setTooltip ("Small random changes to timing and loudness, so it sounds less like a machine");
 
         for (auto* box : { &modeBox, &rhythmBox, &arpBox, &densityBox, &rangeBox,
-                           &octavesBox, &notesBox, &variationBox, &gateBox, &accentBox, &swingBox })
+                           &octavesBox, &notesBox, &variationBox, &gateBox, &accentBox, &swingBox, &humaniseBox })
         {
             box->onChange = [this]
             {
@@ -1572,6 +1574,7 @@ namespace madscaler::ui
         gateBox.setSelectedId (settings.gate + 1, juce::dontSendNotification);
         accentBox.setSelectedId ((int) settings.accent + 1, juce::dontSendNotification);
         swingBox.setSelectedId (settings.swing + 1, juce::dontSendNotification);
+        humaniseBox.setSelectedId (settings.humanise + 1, juce::dontSendNotification);
         bassButton.setToggleState (settings.bassNote, juce::dontSendNotification);
         flowButton.setToggleState (settings.keepFlowing, juce::dontSendNotification);
         rangeBox.setSelectedId (settings.lowNote < 60 ? 1 : (settings.lowNote > 60 ? 3 : 2), juce::dontSendNotification);
@@ -1583,7 +1586,7 @@ namespace madscaler::ui
         lastVersion = processor.getMelodyStateVersion();
     }
 
-    void MelodyPanel::takeChords()
+    void sendChordsToMelody (MadScalerProcessor& processor)
     {
         auto state = processor.getMelodyState();
         state.chords = processor.getProgression().slots;
@@ -1597,11 +1600,19 @@ namespace madscaler::ui
         }
 
         state.notes = madscaler::generateMelody (state.chords, state.settings);
+        state.bass.keyPitchClass = state.settings.keyPitchClass;
+        state.bass.scaleIndex = state.settings.scaleIndex;
+        state.bassNotes = madscaler::generateBass (state.chords, state.bass);
         state.totalBeats = 0.0;
         for (const auto& chord : state.chords)
             state.totalBeats += chord.lengthBeats;
 
         processor.setMelodyState (state);
+    }
+
+    void MelodyPanel::takeChords()
+    {
+        sendChordsToMelody (processor);
         loadFromProcessor();
     }
 
@@ -1617,6 +1628,7 @@ namespace madscaler::ui
         settings.gate = juce::jmax (0, gateBox.getSelectedId() - 1);
         settings.accent = (madscaler::Accent) juce::jmax (0, accentBox.getSelectedId() - 1);
         settings.swing = juce::jmax (0, swingBox.getSelectedId() - 1);
+        settings.humanise = juce::jmax (0, humaniseBox.getSelectedId() - 1);
         settings.bassNote = bassButton.getToggleState();
         settings.keepFlowing = flowButton.getToggleState();
         const auto range = juce::jmax (0, rangeBox.getSelectedId() - 1);
@@ -1642,6 +1654,16 @@ namespace madscaler::ui
             state.settings.seed = (uint32_t) juce::Random::getSystemRandom().nextInt (1 << 30) + 1u;
 
         state.notes = madscaler::generateMelody (state.chords, state.settings);
+
+        // A walking bass follows the scale too.
+        if (state.bass.keyPitchClass != state.settings.keyPitchClass || state.bass.scaleIndex != state.settings.scaleIndex)
+        {
+            state.bass.keyPitchClass = state.settings.keyPitchClass;
+            state.bass.scaleIndex = state.settings.scaleIndex;
+            if (state.bass.style == madscaler::BassStyle::walking)
+                state.bassNotes = madscaler::generateBass (state.chords, state.bass);
+        }
+
         processor.setMelodyState (state);
         roll.setMelody (state);
         lastVersion = processor.getMelodyStateVersion();
@@ -1784,6 +1806,7 @@ namespace madscaler::ui
         arpBox.setBounds (styleArea);
         densityBox.setBounds (styleArea);
         place (row, rangeBox, 80);
+        place (row, humaniseBox, 120);
         channelSlider.setBounds (row.removeFromRight (84));
         channelLabel.setBounds (row);
 
@@ -1813,6 +1836,270 @@ namespace madscaler::ui
         area.removeFromTop (6);
         roll.setBounds (area);
     }
+    BassPanel::BassPanel (MadScalerProcessor& p) : processor (p)
+    {
+        titleLabel.setText ("Bassline", juce::dontSendNotification);
+        titleLabel.setColour (juce::Label::textColourId, Colours::accent);
+        titleLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        addAndMakeVisible (titleLabel);
+
+        hintLabel.setText ("Follows the chords sent with \"To Melody\". Route its channel to a bass synth and turn on Play along.",
+                           juce::dontSendNotification);
+        hintLabel.setColour (juce::Label::textColourId, Colours::textDim);
+        hintLabel.setFont (juce::FontOptions (11.5f));
+        hintLabel.setMinimumHorizontalScale (0.8f);
+        addAndMakeVisible (hintLabel);
+
+        styleList.setModel (&styleModel);
+        styleList.setRowHeight (20);
+        styleList.setColour (juce::ListBox::backgroundColourId, Colours::background);
+        styleList.setColour (juce::ListBox::outlineColourId, Colours::pad);
+        styleList.setOutlineThickness (1);
+        addAndMakeVisible (styleList);
+
+        rangeBox.addItemList ({ "Deep (E1)", "Low (C2)", "Mid (C3)" }, 1);
+        rangeBox.setTooltip ("Register of the bass: the lowest root it plays");
+        gateBox.addItemList ({ "Staccato", "Normal", "Legato" }, 1);
+        gateBox.setTooltip ("Note length: short, normal or joined up");
+        swingBox.addItemList ({ "No swing", "Light swing", "Medium swing", "Heavy swing" }, 1);
+        swingBox.setTooltip ("Pushes off-beat eighths and sixteenths late for a shuffled feel");
+        humaniseBox.addItemList ({ "Exact", "Humanise a bit", "Humanise more", "Loose" }, 1);
+        humaniseBox.setTooltip ("Small random changes to timing and loudness, so it sounds less like a machine");
+
+        for (auto* box : { &rangeBox, &gateBox, &swingBox, &humaniseBox })
+        {
+            box->onChange = [this] { regenerate (false); };
+            addAndMakeVisible (*box);
+        }
+
+        leadInButton.setTooltip ("Adds a passing note half a step from the next chord's root just before each chord change");
+        leadInButton.setColour (juce::ToggleButton::textColourId, Colours::textDim);
+        leadInButton.onClick = [this] { regenerate (false); };
+        addAndMakeVisible (leadInButton);
+
+        channelLabel.setText ("Ch", juce::dontSendNotification);
+        channelLabel.setColour (juce::Label::textColourId, Colours::textDim);
+        channelLabel.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (channelLabel);
+        channelSlider.setSliderStyle (juce::Slider::IncDecButtons);
+        channelSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 30, 24);
+        channelSlider.setTooltip ("MIDI channel the bass plays and exports on");
+        addAndMakeVisible (channelSlider);
+        channelAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.parameters, "bassChannel",
+                                                                                                    channelSlider);
+
+        for (auto* button : { &getChordsButton, &newButton, &playButton, &exportButton, &editButton })
+        {
+            button->setColour (juce::TextButton::buttonColourId, Colours::pad);
+            button->setColour (juce::TextButton::buttonOnColourId, Colours::padLit);
+            button->setColour (juce::TextButton::textColourOffId, Colours::text);
+            addAndMakeVisible (*button);
+        }
+
+        getChordsButton.setTooltip ("Take the chords of the progression below (for the melody too)");
+        getChordsButton.onClick = [this]
+        {
+            sendChordsToMelody (processor);
+            loadFromProcessor();
+        };
+        newButton.setTooltip ("Another take of the bassline: changes the walking notes and humanising");
+        newButton.onClick = [this] { regenerate (true); };
+        playButton.setClickingTogglesState (true);
+        playButton.setTooltip ("Play the bass along with the progression when it plays");
+        playButton.onClick = [this] { processor.setBassPlaying (playButton.getToggleState()); };
+        exportButton.onClick = [this] { exportMidi(); };
+        editButton.setTooltip ("Open the piano roll to change the bass notes one by one");
+        editButton.onClick = [this]
+        {
+            if (onEditNotes)
+                onEditNotes();
+        };
+
+        dragHandle.writeFile = [this] (const juce::File& file)
+        {
+            return processor.getMelodyState().bassNotes.empty() ? juce::File() : writeMidiFile (file);
+        };
+        addAndMakeVisible (dragHandle);
+        addAndMakeVisible (roll);
+
+        loadFromProcessor();
+    }
+
+    void BassPanel::loadFromProcessor()
+    {
+        const auto& state = processor.getMelodyState();
+        const auto& bass = state.bass;
+        const juce::ScopedValueSetter<bool> guard (loading, true);
+
+        styleList.selectRow ((int) bass.style, false, true);
+        rangeBox.setSelectedId (bass.lowNote < 36 ? 1 : (bass.lowNote > 36 ? 3 : 2), juce::dontSendNotification);
+        gateBox.setSelectedId (bass.gate + 1, juce::dontSendNotification);
+        swingBox.setSelectedId (bass.swing + 1, juce::dontSendNotification);
+        humaniseBox.setSelectedId (bass.humanise + 1, juce::dontSendNotification);
+        leadInButton.setToggleState (bass.leadIn, juce::dontSendNotification);
+        playButton.setToggleState (processor.isBassPlaying(), juce::dontSendNotification);
+
+        roll.setMelody (state, true);
+        lastVersion = processor.getMelodyStateVersion();
+    }
+
+    void BassPanel::regenerate (bool newSeed)
+    {
+        if (loading)
+            return;
+
+        auto state = processor.getMelodyState();
+        auto& bass = state.bass;
+        bass.style = (madscaler::BassStyle) juce::jmax (0, styleList.getSelectedRow());
+        const int lows[] { 28, 36, 48 };
+        bass.lowNote = lows[juce::jlimit (0, 2, rangeBox.getSelectedId() - 1)];
+        bass.gate = juce::jmax (0, gateBox.getSelectedId() - 1);
+        bass.swing = juce::jmax (0, swingBox.getSelectedId() - 1);
+        bass.humanise = juce::jmax (0, humaniseBox.getSelectedId() - 1);
+        bass.leadIn = leadInButton.getToggleState();
+        bass.keyPitchClass = state.settings.keyPitchClass;
+        bass.scaleIndex = state.settings.scaleIndex;
+        if (newSeed)
+            bass.seed = (uint32_t) juce::Random::getSystemRandom().nextInt (1 << 30) + 1u;
+
+        state.bassNotes = madscaler::generateBass (state.chords, bass);
+        processor.setMelodyState (state);
+        roll.setMelody (state, true);
+        lastVersion = processor.getMelodyStateVersion();
+    }
+
+    void BassPanel::update()
+    {
+        if (processor.getMelodyStateVersion() != lastVersion)
+            loadFromProcessor();
+
+        const auto& state = processor.getMelodyState();
+        const auto hasNotes = ! state.bassNotes.empty();
+        exportButton.setEnabled (hasNotes);
+        editButton.setEnabled (hasNotes);
+        dragHandle.setEnabled (hasNotes);
+        dragHandle.setAlpha (hasNotes ? 1.0f : 0.5f);
+        newButton.setEnabled (! state.chords.empty());
+
+        if (playButton.getToggleState() != processor.isBassPlaying())
+            playButton.setToggleState (processor.isBassPlaying(), juce::dontSendNotification);
+    }
+
+    void BassPanel::StyleModel::paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool isSelected)
+    {
+        const auto& names = madscaler::getBassStyleNames();
+        if (row < 0 || row >= (int) names.size())
+            return;
+
+        g.setColour (isSelected ? Colours::padLit : (row % 2 == 0 ? Colours::panel : Colours::background));
+        g.fillRect (0, 0, width, height);
+        g.setColour (Colours::text);
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawText (names[(size_t) row], 6, 0, width - 12, height, juce::Justification::centredLeft);
+    }
+
+    void BassPanel::StyleModel::selectedRowsChanged (int)
+    {
+        owner.regenerate (false);
+    }
+
+    juce::File BassPanel::writeMidiFile (const juce::File& file) const
+    {
+        const auto channel = (int) processor.parameters.getRawParameterValue ("bassChannel")->load();
+        const auto bpm = processor.getLastBpm();
+
+        constexpr int ticksPerBeat = 960;
+        juce::MidiMessageSequence sequence;
+        sequence.addEvent (juce::MidiMessage::tempoMetaEvent ((int) std::round (60000000.0 / bpm)), 0.0);
+        for (const auto& note : processor.getMelodyState().bassNotes)
+        {
+            const auto start = std::round (note.startBeat * ticksPerBeat);
+            const auto end = std::round ((note.startBeat + note.lengthBeats) * ticksPerBeat);
+            sequence.addEvent (juce::MidiMessage::noteOn (channel, note.note, (juce::uint8) juce::jlimit (1, 127, note.velocity)), start);
+            sequence.addEvent (juce::MidiMessage::noteOff (channel, note.note), juce::jmax (start + 1.0, end));
+        }
+        sequence.updateMatchedPairs();
+
+        juce::MidiFile midiFile;
+        midiFile.setTicksPerQuarterNote (ticksPerBeat);
+        midiFile.addTrack (sequence);
+
+        file.deleteFile();
+        juce::FileOutputStream stream (file);
+        if (! stream.openedOk() || ! midiFile.writeTo (stream))
+            return {};
+        stream.flush();
+        return file;
+    }
+
+    void BassPanel::exportMidi()
+    {
+        if (processor.getMelodyState().bassNotes.empty())
+            return;
+
+        chooser = std::make_unique<juce::FileChooser> ("Export bassline as MIDI",
+                                                       juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                                                           .getChildFile ("MadScaler Bass.mid"),
+                                                       "*.mid");
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this] (const juce::FileChooser& fc)
+                              {
+                                  const auto file = fc.getResult();
+                                  if (file != juce::File())
+                                      writeMidiFile (file.withFileExtension ("mid"));
+                              });
+    }
+
+    void BassPanel::paint (juce::Graphics& g)
+    {
+        g.setColour (Colours::panel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+    }
+
+    void BassPanel::resized()
+    {
+        auto area = getLocalBounds().reduced (10, 8);
+
+        auto left = area.removeFromLeft (196);
+        area.removeFromLeft (10);
+        titleLabel.setBounds (left.removeFromTop (20));
+        getChordsButton.setBounds (left.removeFromBottom (24));
+        left.removeFromBottom (4);
+        styleList.setBounds (left);
+
+        auto place = [] (juce::Rectangle<int>& row, juce::Component& component, int width)
+        {
+            component.setBounds (row.removeFromLeft (width));
+            row.removeFromLeft (6);
+        };
+
+        auto row = area.removeFromTop (24);
+        place (row, rangeBox, 110);
+        place (row, gateBox, 90);
+        place (row, swingBox, 120);
+        place (row, humaniseBox, 130);
+        place (row, leadInButton, 120);
+        channelSlider.setBounds (row.removeFromRight (84));
+        channelLabel.setBounds (row);
+
+        area.removeFromTop (6);
+        row = area.removeFromTop (24);
+        dragHandle.setBounds (row.removeFromRight (100));
+        row.removeFromRight (6);
+        exportButton.setBounds (row.removeFromRight (64));
+        row.removeFromRight (6);
+        playButton.setBounds (row.removeFromRight (86));
+        row.removeFromRight (6);
+        newButton.setBounds (row.removeFromRight (84));
+        row.removeFromRight (6);
+        editButton.setBounds (row.removeFromRight (84));
+        row.removeFromRight (6);
+        hintLabel.setBounds (row);
+
+        area.removeFromTop (6);
+        roll.setBounds (area);
+    }
+
     NoteEditor::NoteEditor (MadScalerProcessor& p) : processor (p)
     {
         setWantsKeyboardFocus (true);
@@ -1833,6 +2120,12 @@ namespace madscaler::ui
         snapBox.setSelectedId (3, juce::dontSendNotification);
         snapBox.setTooltip ("Grid that notes move and stretch on");
         addAndMakeVisible (snapBox);
+
+        partBox.addItemList ({ "Melody", "Bass" }, 1);
+        partBox.setSelectedId (1, juce::dontSendNotification);
+        partBox.setTooltip ("Which part to edit");
+        partBox.onChange = [this] { setPart (partBox.getSelectedId() == 2); };
+        addAndMakeVisible (partBox);
 
         scaleButton.setToggleState (true, juce::dontSendNotification);
         scaleButton.setTooltip ("Keep moved and added notes on the melody's scale");
@@ -1875,15 +2168,38 @@ namespace madscaler::ui
         }
     }
 
+    const std::vector<madscaler::TimedNote>& NoteEditor::partNotes (const MadScalerProcessor::MelodyState& state) const
+    {
+        return bassPart ? state.bassNotes : state.notes;
+    }
+
+    void NoteEditor::setPart (bool bass)
+    {
+        partBox.setSelectedId (bass ? 2 : 1, juce::dontSendNotification);
+        if (bass == bassPart && lastVersion >= 0)
+            return;
+
+        stopAudition();
+        bassPart = bass;
+        undoStack.clear();
+        redoStack.clear();
+        notes = partNotes (processor.getMelodyState());
+        lastVersion = processor.getMelodyStateVersion();
+        selected.clear();
+        updateRange();
+        update();
+        repaint();
+    }
+
     void NoteEditor::update()
     {
         // The melody changed somewhere else (a new melody, a setting, a state
         // load): take it, and keep what was there so Undo can bring it back.
         if (processor.getMelodyStateVersion() != lastVersion && dragMode == DragMode::none)
         {
-            const auto& state = processor.getMelodyState();
-            const auto changed = state.notes.size() != notes.size()
-                                 || ! std::equal (state.notes.begin(), state.notes.end(), notes.begin(),
+            const auto& current = partNotes (processor.getMelodyState());
+            const auto changed = current.size() != notes.size()
+                                 || ! std::equal (current.begin(), current.end(), notes.begin(),
                                                   [] (const madscaler::TimedNote& a, const madscaler::TimedNote& b)
                                                   { return a.note == b.note && a.velocity == b.velocity
                                                            && std::abs (a.startBeat - b.startBeat) < 1.0e-9
@@ -1895,7 +2211,7 @@ namespace madscaler::ui
                     undoStack.push_back (notes);
                     redoStack.clear();
                 }
-                notes = state.notes;
+                notes = current;
                 selected.clear();
                 updateRange();
                 repaint();
@@ -1909,8 +2225,9 @@ namespace madscaler::ui
 
     void NoteEditor::updateRange()
     {
-        const auto& settings = processor.getMelodyState().settings;
-        auto low = settings.lowNote - 2, high = settings.highNote + 2;
+        const auto& state = processor.getMelodyState();
+        auto low = bassPart ? state.bass.lowNote - 2 : state.settings.lowNote - 2;
+        auto high = bassPart ? state.bass.lowNote + 21 : state.settings.highNote + 2;
         for (const auto& note : notes)
         {
             low = std::min (low, note.note - 3);
@@ -2034,8 +2351,9 @@ namespace madscaler::ui
     void NoteEditor::commit()
     {
         auto state = processor.getMelodyState();
-        state.notes = notes;
-        std::stable_sort (state.notes.begin(), state.notes.end(),
+        auto& target = bassPart ? state.bassNotes : state.notes;
+        target = notes;
+        std::stable_sort (target.begin(), target.end(),
                           [] (const madscaler::TimedNote& a, const madscaler::TimedNote& b) { return a.startBeat < b.startBeat; });
         processor.setMelodyState (state);
         lastVersion = processor.getMelodyStateVersion();
@@ -2166,13 +2484,13 @@ namespace madscaler::ui
             return;
         stopAudition();
         auditionNote = note;
-        processor.setMelodyNotePressed (note, true);
+        processor.setMelodyNotePressed (note, true, bassPart);
     }
 
     void NoteEditor::stopAudition()
     {
         if (auditionNote >= 0)
-            processor.setMelodyNotePressed (auditionNote, false);
+            processor.setMelodyNotePressed (auditionNote, false, bassPart);
         auditionNote = -1;
     }
 
@@ -2528,13 +2846,15 @@ namespace madscaler::ui
         bar.removeFromRight (6);
         snapBox.setBounds (bar.removeFromRight (140));
         bar.removeFromRight (6);
+        partBox.setBounds (bar.removeFromRight (90));
+        bar.removeFromRight (6);
         hintLabel.setBounds (bar);
     }
 
 } // namespace madscaler::ui
 
 MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), coloursPanel (p), progressionStrip (p), libraryPanel (p, progressionStrip), melodyPanel (p), noteEditor (p), keyboard (p)
+    : AudioProcessorEditor (&p), processor (p), detectionPanel (p), coloursPanel (p), progressionStrip (p), libraryPanel (p, progressionStrip), melodyPanel (p), bassPanel (p), noteEditor (p), keyboard (p)
 {
     auto& lf = getLookAndFeel();
     lf.setColour (juce::ComboBox::backgroundColourId, Colours::panel);
@@ -2635,10 +2955,11 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (coloursPanel);
     addChildComponent (libraryPanel);
     addChildComponent (melodyPanel);
+    addChildComponent (bassPanel);
     addChildComponent (noteEditor);
     addAndMakeVisible (progressionStrip);
 
-    for (auto* tab : { &coloursTab, &libraryTab, &detectTab, &melodyTab })
+    for (auto* tab : { &coloursTab, &libraryTab, &detectTab, &melodyTab, &bassTab })
     {
         tab->setClickingTogglesState (true);
         tab->setRadioGroupId (1);
@@ -2653,8 +2974,16 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     libraryTab.onClick = [this] { showTab (1); };
     detectTab.onClick = [this] { showTab (2); };
     melodyTab.onClick = [this] { showTab (3); };
+    bassTab.onClick = [this] { showTab (4); };
+    bassPanel.onEditNotes = [this]
+    {
+        noteEditor.setPart (true);
+        noteEditor.setVisible (true);
+        noteEditor.toFront (true);
+    };
     melodyPanel.onEditNotes = [this]
     {
+        noteEditor.setPart (false);
         noteEditor.setVisible (true);
         noteEditor.toFront (true);
     };
@@ -2697,8 +3026,8 @@ MadScalerEditor::MadScalerEditor (MadScalerProcessor& p)
     addAndMakeVisible (keyboard);
 
     setResizable (true, true);
-    setResizeLimits (800, 850, 1600, 1410);
-    setSize (880, 910);
+    setResizeLimits (940, 850, 1800, 1410);
+    setSize (960, 910);
     startTimerHz (30);
 }
 
@@ -2774,11 +3103,13 @@ void MadScalerEditor::resized()
     libraryTab.setBounds (tabs.removeFromLeft (90));
     detectTab.setBounds (tabs.removeFromLeft (90));
     melodyTab.setBounds (tabs.removeFromLeft (90));
+    bassTab.setBounds (tabs.removeFromLeft (90));
     const auto panelArea = area.removeFromTop (200);
     coloursPanel.setBounds (panelArea);
     libraryPanel.setBounds (panelArea);
     detectionPanel.setBounds (panelArea);
     melodyPanel.setBounds (panelArea);
+    bassPanel.setBounds (panelArea);
     noteEditor.setBounds (panelArea.getUnion (area.withTrimmedBottom (88)));
     area.removeFromTop (8);
     progressionStrip.setBounds (area.removeFromTop (84));
@@ -2814,7 +3145,8 @@ void MadScalerEditor::showTab (int tab)
     libraryPanel.setVisible (tab == 1);
     detectionPanel.setVisible (tab == 2);
     melodyPanel.setVisible (tab == 3);
-    if (tab != 3)
+    bassPanel.setVisible (tab == 4);
+    if (tab != 3 && tab != 4)
         noteEditor.setVisible (false);
 }
 
@@ -2836,6 +3168,7 @@ void MadScalerEditor::timerCallback()
     coloursPanel.update();
     progressionStrip.update();
     melodyPanel.update();
+    bassPanel.update();
     noteEditor.update();
 
     // Mark the pads that usually follow the last chord played.

@@ -332,6 +332,80 @@ int main()
         processor.setProgression ({});
     }
 
+    // Bass: off until switched on, then plays on channel 3 next to the melody.
+    {
+        madscaler::Progression progression;
+        progression.slots.push_back ({ "C", { 60, 64, 67 }, 4.0 });
+        processor.setProgression (progression);
+
+        MadScalerProcessor::MelodyState melody;
+        melody.chords = progression.slots;
+        melody.notes = { { 0.0, 1.0, 72, 100 } };
+        melody.bass.style = madscaler::BassStyle::rootFifth;
+        melody.bass.leadIn = true;
+        melody.bassNotes = { { 0.0, 2.0, 36, 100 }, { 2.0, 2.0, 43, 100 } };
+        melody.totalBeats = 4.0;
+        processor.setMelodyState (melody);
+        processor.setMelodyPlaying (true);
+        expect (! processor.isBassPlaying(), "bass is off by default");
+
+        auto playFor = [&processor] (int blocks)
+        {
+            std::vector<Note> result;
+            for (int block = 0; block < blocks; ++block)
+                for (const auto& note : runBlock (processor))
+                    result.push_back (note);
+            return result;
+        };
+
+        processor.setProgressionPlaying (true);
+        auto played = playFor (200);
+        bool anyBass = false;
+        for (const auto& note : played)
+            anyBass = anyBass || note.channel == 3;
+        expect (! anyBass, "no bass while it is off");
+
+        processor.setProgressionPlaying (false);
+        playFor (2);
+        processor.setBassPlaying (true);
+        processor.setProgressionPlaying (true);
+        played = playFor (370);
+        std::vector<Note> bassNotes, melodyNotes;
+        for (const auto& note : played)
+        {
+            if (note.channel == 3) bassNotes.push_back (note);
+            if (note.channel == 2) melodyNotes.push_back (note);
+        }
+        expect (hasNotes (bassNotes, true, { 36, 43 }), "bass plays on channel 3");
+        expect (hasNotes (melodyNotes, true, { 72 }), "melody still plays on channel 2");
+
+        // Switching the bass off mid-note releases it.
+        processor.setProgressionPlaying (false);
+        playFor (2);
+        processor.setProgressionPlaying (true);
+        playFor (10);
+        processor.setBassPlaying (false);
+        const auto released = playFor (1);
+        bool bassOff = false;
+        for (const auto& note : released)
+            bassOff = bassOff || (note.channel == 3 && ! note.on && note.number == 36);
+        expect (bassOff, "switching the bass off releases its note");
+        processor.setProgressionPlaying (false);
+        playFor (2);
+
+        processor.setBassPlaying (true);
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        const auto& restored = reloaded.getMelodyState();
+        expect (restored.bassNotes.size() == 2 && restored.bassNotes[1].note == 43 && restored.bass.leadIn
+                    && restored.bass.style == madscaler::BassStyle::rootFifth && reloaded.isBassPlaying(),
+                "bass survives a save and reload");
+        processor.setBassPlaying (false);
+        processor.setProgression ({});
+    }
+
     // State round trip.
     setParam (processor, "scale", 1.0f);
     juce::MemoryBlock state;

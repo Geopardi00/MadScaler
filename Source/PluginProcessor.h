@@ -3,6 +3,7 @@
 #include "ChordColours.h"
 #include "ChordDetector.h"
 #include "ChordLibrary.h"
+#include "BassMaker.h"
 #include "MelodyMaker.h"
 #include "ChordEngine.h"
 #include "PatternEngine.h"
@@ -93,6 +94,10 @@ public:
         madscaler::MelodySettings settings;
         std::vector<madscaler::TimedNote> notes;
         double totalBeats = 0.0;
+
+        // The bassline over the same chords, on the bass channel.
+        madscaler::BassSettings bass;
+        std::vector<madscaler::TimedNote> bassNotes;
     };
 
     const MelodyState& getMelodyState() const { return melodyState; }
@@ -104,8 +109,12 @@ public:
     void setMelodyPlaying (bool shouldPlay) { melodyPlaying.store (shouldPlay); }
     bool isMelodyPlaying() const { return melodyPlaying.load(); }
 
-    // Plays one note on the melody channel, to hear a note while editing it.
-    void setMelodyNotePressed (int midiNote, bool pressed);
+    // While on, the bassline plays along with the progression on the bass channel.
+    void setBassPlaying (bool shouldPlay) { bassPlaying.store (shouldPlay); }
+    bool isBassPlaying() const { return bassPlaying.load(); }
+
+    // Plays one note on the melody (or bass) channel, to hear a note while editing it.
+    void setMelodyNotePressed (int midiNote, bool pressed, bool bass = false);
 
     // MIDI notes currently held on MadScaler's input (keyboard, DAW track or
     // on-screen keys), excluding keys used to trigger chords. Safe to call from any thread.
@@ -197,12 +206,13 @@ private:
     std::atomic<float>* strumParam = nullptr;
     std::atomic<float>* keysLockParam = nullptr;
     std::atomic<float>* melodyChannelParam = nullptr;
+    std::atomic<float>* bassChannelParam = nullptr;
 
     // Clicks in the editor travel from the message thread to the audio thread
     // through a lock-free single-producer single-consumer queue.
     struct UiEvent
     {
-        enum class Kind { pad, keyboardNote, detectedChord, colourChord, melodyNote };
+        enum class Kind { pad, keyboardNote, detectedChord, colourChord, melodyNote, bassNote };
 
         Kind kind = Kind::pad;
         int index = 0; // degree, MIDI note, detected chord slot or colour chord id
@@ -283,12 +293,13 @@ private:
     // Melody playback, swapped in like the progression snapshot.
     struct MelodySnapshot
     {
-        static constexpr int maxNotes = 512;
+        static constexpr int maxNotes = 1024;
 
         struct Note
         {
             double start = 0.0, length = 0.0;
             int note = 60, velocity = 100;
+            bool bass = false;
         };
 
         int numNotes = 0;
@@ -300,6 +311,7 @@ private:
     {
         int note = 0, channel = 1;
         double endBeat = 0.0;
+        bool bass = false;
     };
 
     MelodyState melodyState;
@@ -307,6 +319,7 @@ private:
     MelodySnapshot pendingMelody, audioMelody;
     std::atomic<bool> melodyChanged { false };
     std::atomic<bool> melodyPlaying { true };
+    std::atomic<bool> bassPlaying { false };
     std::array<ActiveMelodyNote, 32> activeMelodyNotes {};
     int numActiveMelodyNotes = 0;
     double lastMelodyEndBeat = -1.0;

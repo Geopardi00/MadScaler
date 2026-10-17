@@ -367,7 +367,7 @@ namespace madscaler::ui
     class MelodyRoll : public juce::Component
     {
     public:
-        void setMelody (const MadScalerProcessor::MelodyState& state);
+        void setMelody (const MadScalerProcessor::MelodyState& state, bool bass = false);
         void paint (juce::Graphics&) override;
 
     private:
@@ -422,13 +422,67 @@ namespace madscaler::ui
         juce::ListBox scaleList;
         juce::Label titleLabel, channelLabel;
         juce::ComboBox modeBox, rhythmBox, arpBox, densityBox, rangeBox;
-        juce::ComboBox octavesBox, notesBox, variationBox, gateBox, accentBox, swingBox;
+        juce::ComboBox octavesBox, notesBox, variationBox, gateBox, accentBox, swingBox, humaniseBox;
         juce::ToggleButton bassButton { "Bass" }, flowButton { "Keep flowing" };
         juce::Slider channelSlider;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> channelAttachment;
         juce::TextButton getChordsButton { "Get chords" }, newButton { "New melody" }, playButton { "Play along" },
                          exportButton { "Export" }, editButton { "Edit notes" };
         MidiDragHandle dragHandle { "Drag melody", "MadScaler Melody.mid", "Drag the melody into your DAW as a MIDI clip" };
+        MelodyRoll roll;
+        std::unique_ptr<juce::FileChooser> chooser;
+        int lastVersion = -1;
+        bool loading = false;
+    };
+
+    // Sends the progression's chords to the MelodyMaker and the bass, picking
+    // the scale that fits best and making a melody and a bassline.
+    void sendChordsToMelody (MadScalerProcessor& processor);
+
+    // A bassline over the chords sent to the MelodyMaker, on its own channel.
+    class BassPanel : public juce::Component
+    {
+    public:
+        explicit BassPanel (MadScalerProcessor& processor);
+
+        // Called regularly from the editor's timer.
+        void update();
+
+        // Called by the "Edit notes" button.
+        std::function<void()> onEditNotes;
+
+        void paint (juce::Graphics&) override;
+        void resized() override;
+
+    private:
+        class StyleModel : public juce::ListBoxModel
+        {
+        public:
+            explicit StyleModel (BassPanel& o) : owner (o) {}
+            int getNumRows() override { return (int) madscaler::getBassStyleNames().size(); }
+            void paintListBoxItem (int row, juce::Graphics&, int width, int height, bool selected) override;
+            void selectedRowsChanged (int lastRowSelected) override;
+
+        private:
+            BassPanel& owner;
+        };
+
+        void loadFromProcessor();
+        void regenerate (bool newSeed);
+        juce::File writeMidiFile (const juce::File& file) const;
+        void exportMidi();
+
+        MadScalerProcessor& processor;
+        StyleModel styleModel { *this };
+        juce::ListBox styleList;
+        juce::Label titleLabel, channelLabel, hintLabel;
+        juce::ComboBox rangeBox, gateBox, swingBox, humaniseBox;
+        juce::ToggleButton leadInButton { "Lead-in notes" };
+        juce::Slider channelSlider;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> channelAttachment;
+        juce::TextButton getChordsButton { "Get chords" }, newButton { "New bass" }, playButton { "Play along" },
+                         exportButton { "Export" }, editButton { "Edit notes" };
+        MidiDragHandle dragHandle { "Drag bass", "MadScaler Bass.mid", "Drag the bassline into your DAW as a MIDI clip" };
         MelodyRoll roll;
         std::unique_ptr<juce::FileChooser> chooser;
         int lastVersion = -1;
@@ -443,6 +497,9 @@ namespace madscaler::ui
     public:
         explicit NoteEditor (MadScalerProcessor& processor);
         ~NoteEditor() override;
+
+        // Edits the bassline instead of the melody.
+        void setPart (bool bass);
 
         // Called regularly from the editor's timer.
         void update();
@@ -476,6 +533,7 @@ namespace madscaler::ui
         int snapPitch (int note, int direction) const;
         bool inScale (int note) const;
         void updateRange();
+        const std::vector<madscaler::TimedNote>& partNotes (const MadScalerProcessor::MelodyState& state) const;
 
         void pushUndo();
         void commit();            // sends the edited notes to the processor
@@ -489,8 +547,9 @@ namespace madscaler::ui
 
         MadScalerProcessor& processor;
         juce::Label titleLabel, hintLabel;
-        juce::ComboBox snapBox;
+        juce::ComboBox snapBox, partBox;
         juce::ToggleButton scaleButton { "Scale notes only" };
+        bool bassPart = false;
         juce::TextButton undoButton { "Undo" }, redoButton { "Redo" }, doneButton { "Done" };
 
         std::vector<madscaler::TimedNote> notes;
@@ -550,11 +609,13 @@ private:
     std::array<std::unique_ptr<madscaler::ui::ChordPad>, MadScalerProcessor::numDegrees> pads;
     madscaler::ui::DetectionPanel detectionPanel;
     madscaler::ui::ColoursPanel coloursPanel;
-    juce::TextButton coloursTab { "Colours" }, libraryTab { "Library" }, detectTab { "Detect" }, melodyTab { "Melody" };
+    juce::TextButton coloursTab { "Colours" }, libraryTab { "Library" }, detectTab { "Detect" }, melodyTab { "Melody" },
+                     bassTab { "Bass" };
     int lastSuggestedDegree = -2;
     madscaler::ui::ProgressionStrip progressionStrip;
     madscaler::ui::LibraryPanel libraryPanel;
     madscaler::ui::MelodyPanel melodyPanel;
+    madscaler::ui::BassPanel bassPanel;
     madscaler::ui::NoteEditor noteEditor;
     madscaler::ui::ScaleKeyboard keyboard;
 
