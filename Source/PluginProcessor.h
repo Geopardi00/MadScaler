@@ -142,8 +142,28 @@ public:
     void setProgressionPlaying (bool shouldPlay) { progressionPlaying.store (shouldPlay); }
     bool isProgressionPlaying() const { return progressionPlaying.load(); }
 
-    // Index of the progression chord sounding now, or -1.
-    int getCurrentProgressionSlot() const { return currentProgressionSlot.load(); }
+    // Index of the progression chord sounding now in the section on screen, or -1.
+    int getCurrentProgressionSlot() const;
+
+    // Sections (A to D), each its own progression, e.g. verse and chorus.
+    // getProgression() is always the selected section.
+    static constexpr int numSections = 4;
+    int getCurrentSection() const { return currentSection; }
+    void selectSection (int section);
+    const madscaler::Progression& getSection (int section) const;
+    void copySection (int from, int to);
+    void clearSection (int section);
+
+    // While on, playback, export and To Melody run every section that has
+    // chords, one after another (A B C D).
+    void setChainSections (bool shouldChain);
+    bool isChainingSections() const { return chainSections; }
+
+    // What plays: the selected section, or all sections chained.
+    madscaler::Progression getPlaybackProgression() const;
+
+    // The section playing now (useful while chaining), or -1.
+    int getPlayingSection() const { return playingSection.load(); }
 
     // The pattern currently selected, or nullopt when Pattern is Off.
     std::optional<madscaler::PatternSettings> getPatternSettings() const;
@@ -284,16 +304,23 @@ private:
             int numNotes = 0;
             std::array<int, maxChordNotes> notes {};
             double lengthBeats = 4.0;
+            int section = 0;
+            int index = 0; // position within its section
         };
 
         int numSlots = 0;
-        std::array<Slot, madscaler::Progression::maxSlots> slots {};
+        std::array<Slot, madscaler::Progression::maxSlots * numSections> slots {};
         double totalBeats = 0.0;
 
         int slotAt (double beat) const;
     };
 
     madscaler::Progression progression;
+    std::array<madscaler::Progression, numSections> sections;
+    int currentSection = 0;
+    bool chainSections = false;
+    std::atomic<int> playingSection { -1 };
+    void updateProgressionSnapshot();
     juce::SpinLock progressionLock;
     ProgressionSnapshot pendingSnapshot;
     std::atomic<bool> snapshotChanged { false };

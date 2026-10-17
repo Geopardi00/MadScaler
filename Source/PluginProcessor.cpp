@@ -581,20 +581,93 @@ void MadScalerProcessor::setProgression (const madscaler::Progression& newProgre
     if ((int) progression.slots.size() > madscaler::Progression::maxSlots)
         progression.slots.resize ((size_t) madscaler::Progression::maxSlots);
 
+    sections[(size_t) currentSection] = progression;
+    updateProgressionSnapshot();
+}
+
+void MadScalerProcessor::updateProgressionSnapshot()
+{
     ProgressionSnapshot snapshot;
-    for (const auto& slot : progression.slots)
+    for (int section = 0; section < numSections; ++section)
     {
-        auto& target = snapshot.slots[(size_t) snapshot.numSlots++];
-        target.numNotes = juce::jmin ((int) slot.notes.size(), maxChordNotes);
-        for (int i = 0; i < target.numNotes; ++i)
-            target.notes[(size_t) i] = juce::jlimit (0, 127, slot.notes[(size_t) i]);
-        target.lengthBeats = juce::jmax (0.25, slot.lengthBeats);
-        snapshot.totalBeats += target.lengthBeats;
+        if (! chainSections && section != currentSection)
+            continue;
+
+        int index = 0;
+        for (const auto& slot : sections[(size_t) section].slots)
+        {
+            auto& target = snapshot.slots[(size_t) snapshot.numSlots++];
+            target.numNotes = juce::jmin ((int) slot.notes.size(), maxChordNotes);
+            for (int i = 0; i < target.numNotes; ++i)
+                target.notes[(size_t) i] = juce::jlimit (0, 127, slot.notes[(size_t) i]);
+            target.lengthBeats = juce::jmax (0.25, slot.lengthBeats);
+            target.section = section;
+            target.index = index++;
+            snapshot.totalBeats += target.lengthBeats;
+        }
     }
 
     const juce::SpinLock::ScopedLockType lock (progressionLock);
     pendingSnapshot = snapshot;
     snapshotChanged.store (true);
+}
+
+int MadScalerProcessor::getCurrentProgressionSlot() const
+{
+    return playingSection.load() == currentSection ? currentProgressionSlot.load() : -1;
+}
+
+void MadScalerProcessor::selectSection (int section)
+{
+    section = juce::jlimit (0, numSections - 1, section);
+    if (section == currentSection)
+        return;
+
+    currentSection = section;
+    setProgression (sections[(size_t) section]);
+}
+
+const madscaler::Progression& MadScalerProcessor::getSection (int section) const
+{
+    return sections[(size_t) juce::jlimit (0, numSections - 1, section)];
+}
+
+void MadScalerProcessor::copySection (int from, int to)
+{
+    from = juce::jlimit (0, numSections - 1, from);
+    to = juce::jlimit (0, numSections - 1, to);
+    sections[(size_t) to] = sections[(size_t) from];
+    if (to == currentSection)
+        setProgression (sections[(size_t) to]);
+    else
+        updateProgressionSnapshot();
+}
+
+void MadScalerProcessor::clearSection (int section)
+{
+    section = juce::jlimit (0, numSections - 1, section);
+    sections[(size_t) section] = {};
+    if (section == currentSection)
+        setProgression ({});
+    else
+        updateProgressionSnapshot();
+}
+
+void MadScalerProcessor::setChainSections (bool shouldChain)
+{
+    chainSections = shouldChain;
+    updateProgressionSnapshot();
+}
+
+madscaler::Progression MadScalerProcessor::getPlaybackProgression() const
+{
+    if (! chainSections)
+        return progression;
+
+    madscaler::Progression chained;
+    for (const auto& section : sections)
+        chained.slots.insert (chained.slots.end(), section.slots.begin(), section.slots.end());
+    return chained;
 }
 
 void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
@@ -641,6 +714,7 @@ void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
             setSlot (-1, 0);
         wasProgressionPlaying = false;
         currentProgressionSlot.store (-1);
+        playingSection.store (-1);
         return;
     }
 
@@ -685,7 +759,17 @@ void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
     if (! hostPlaying)
         freeProgressionBeats = endBeat;
 
-    currentProgressionSlot.store (playingSlot);
+    if (playingSlot >= 0)
+    {
+        const auto& data = audioSnapshot.slots[(size_t) playingSlot];
+        playingSection.store (data.section);
+        currentProgressionSlot.store (data.index);
+    }
+    else
+    {
+        playingSection.store (-1);
+        currentProgressionSlot.store (-1);
+    }
 }
 
 void MadScalerProcessor::setMelodyState (const MelodyState& newState)
@@ -1040,21 +1124,38 @@ void MadScalerProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.removeChild (state.getChildWithName ("Pads"), nullptr);
     state.appendChild (padsTree, nullptr);
 
-    juce::ValueTree progressionTree ("Progression");
-    for (const auto& slot : progression.slots)
+    auto writeSlots = [] (juce::ValueTree& tree, const madscaler::Progression& source)
     {
-        juce::StringArray notes;
-        for (auto note : slot.notes)
-            notes.add (juce::String (note));
+        for (const auto& slot : source.slots)
+        {
+            juce::StringArray notes;
+            for (auto note : slot.notes)
+                notes.add (juce::String (note));
 
-        juce::ValueTree slotTree ("Slot");
-        slotTree.setProperty ("name", juce::String::fromUTF8 (slot.name.c_str()), nullptr);
-        slotTree.setProperty ("notes", notes.joinIntoString (" "), nullptr);
-        slotTree.setProperty ("beats", slot.lengthBeats, nullptr);
-        progressionTree.appendChild (slotTree, nullptr);
-    }
+            juce::ValueTree slotTree ("Slot");
+            slotTree.setProperty ("name", juce::String::fromUTF8 (slot.name.c_str()), nullptr);
+            slotTree.setProperty ("notes", notes.joinIntoString (" "), nullptr);
+            slotTree.setProperty ("beats", slot.lengthBeats, nullptr);
+            tree.appendChild (slotTree, nullptr);
+        }
+    };
+
+    juce::ValueTree progressionTree ("Progression");
+    writeSlots (progressionTree, progression);
     state.removeChild (state.getChildWithName ("Progression"), nullptr);
     state.appendChild (progressionTree, nullptr);
+
+    juce::ValueTree sectionsTree ("Sections");
+    sectionsTree.setProperty ("current", currentSection, nullptr);
+    sectionsTree.setProperty ("chain", chainSections, nullptr);
+    for (const auto& section : sections)
+    {
+        juce::ValueTree sectionTree ("Section");
+        writeSlots (sectionTree, section);
+        sectionsTree.appendChild (sectionTree, nullptr);
+    }
+    state.removeChild (state.getChildWithName ("Sections"), nullptr);
+    state.appendChild (sectionsTree, nullptr);
 
     juce::ValueTree melodyTree ("Melody");
     const auto& settings = melodyState.settings;
@@ -1127,17 +1228,39 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     auto state = juce::ValueTree::fromXml (*xml);
 
-    madscaler::Progression restored;
-    const auto progressionTree = state.getChildWithName ("Progression");
-    for (const auto& slotTree : progressionTree)
+    auto readSlots = [] (const juce::ValueTree& tree)
     {
-        madscaler::ProgressionSlot slot;
-        slot.name = slotTree.getProperty ("name").toString().toStdString();
-        for (const auto& token : juce::StringArray::fromTokens (slotTree.getProperty ("notes").toString(), " ", ""))
-            if (token.isNotEmpty())
-                slot.notes.push_back (token.getIntValue());
-        slot.lengthBeats = (double) slotTree.getProperty ("beats", 4.0);
-        restored.slots.push_back (slot);
+        madscaler::Progression result;
+        for (const auto& slotTree : tree)
+        {
+            madscaler::ProgressionSlot slot;
+            slot.name = slotTree.getProperty ("name").toString().toStdString();
+            for (const auto& token : juce::StringArray::fromTokens (slotTree.getProperty ("notes").toString(), " ", ""))
+                if (token.isNotEmpty())
+                    slot.notes.push_back (token.getIntValue());
+            slot.lengthBeats = (double) slotTree.getProperty ("beats", 4.0);
+            result.slots.push_back (slot);
+            if ((int) result.slots.size() >= madscaler::Progression::maxSlots)
+                break;
+        }
+        return result;
+    };
+
+    const auto progressionTree = state.getChildWithName ("Progression");
+    const auto sectionsTree = state.getChildWithName ("Sections");
+    std::array<madscaler::Progression, numSections> restoredSections;
+    int restoredCurrent = 0;
+    bool restoredChain = false;
+    if (sectionsTree.isValid())
+    {
+        restoredCurrent = juce::jlimit (0, numSections - 1, (int) sectionsTree.getProperty ("current", 0));
+        restoredChain = (bool) sectionsTree.getProperty ("chain", false);
+        for (int i = 0; i < numSections && i < sectionsTree.getNumChildren(); ++i)
+            restoredSections[(size_t) i] = readSlots (sectionsTree.getChild (i));
+    }
+    else
+    {
+        restoredSections[0] = readSlots (progressionTree); // saved before sections existed
     }
 
     MelodyState melody;
@@ -1221,9 +1344,13 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     state.removeChild (padsTree, nullptr);
     state.removeChild (progressionTree, nullptr);
+    state.removeChild (sectionsTree, nullptr);
     state.removeChild (melodyTree, nullptr);
     parameters.replaceState (state);
-    setProgression (restored);
+    sections = restoredSections;
+    currentSection = restoredCurrent;
+    chainSections = restoredChain;
+    setProgression (sections[(size_t) currentSection]);
     setMelodyState (melody);
 }
 

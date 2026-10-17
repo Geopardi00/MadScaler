@@ -261,6 +261,22 @@ namespace madscaler::ui
     };
 
     // Shows the progression, plays it in a loop and exports it as MIDI.
+    // A section button (A to D): click to switch, right-click for a menu.
+    class SectionButton : public juce::TextButton
+    {
+    public:
+        using juce::TextButton::TextButton;
+        std::function<void()> onMenu;
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (e.mods.isPopupMenu() && onMenu)
+                onMenu();
+            else
+                juce::TextButton::mouseDown (e);
+        }
+    };
+
     class ProgressionStrip : public juce::Component
     {
     public:
@@ -292,6 +308,8 @@ namespace madscaler::ui
         juce::File writeMidiFile (const juce::File& file) const;
         void exportMidi();
         void select (int index);
+        void showSectionMenu (int section);
+        void updateSections();
 
         MadScalerProcessor& processor;
         int selected = -1;
@@ -300,6 +318,8 @@ namespace madscaler::ui
                          exportButton { "Export MIDI" }, melodyButton { "To Melody" };
         MidiDragHandle dragHandle { "Drag MIDI", "MadScaler Progression.mid", "Drag the progression into your DAW as a MIDI clip" };
         std::array<std::unique_ptr<ProgressionSlotView>, madscaler::Progression::maxSlots> slots;
+        std::array<SectionButton, MadScalerProcessor::numSections> sectionButtons;
+        juce::TextButton chainButton { "Chain" };
         std::unique_ptr<juce::FileChooser> chooser;
         size_t lastSize = 0;
         int lastCurrent = -2;

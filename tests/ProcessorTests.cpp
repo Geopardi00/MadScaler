@@ -288,6 +288,52 @@ int main()
                 "progression survives a save and reload");
     }
 
+    // Sections: A and B hold their own progressions; chaining plays A then B.
+    {
+        MadScalerProcessor sectioned;
+        sectioned.prepareToPlay (48000.0, 256);
+        madscaler::Progression verse, chorus;
+        verse.slots.push_back ({ "C", { 60, 64, 67 }, 4.0 });
+        chorus.slots.push_back ({ "F", { 53, 57, 60 }, 4.0 });
+        sectioned.setProgression (verse);
+        sectioned.selectSection (1);
+        expect (sectioned.getCurrentSection() == 1 && sectioned.getProgression().slots.empty(), "section B starts empty");
+        sectioned.setProgression (chorus);
+        sectioned.selectSection (0);
+        expect (sectioned.getProgression().slots.size() == 1 && sectioned.getProgression().slots[0].name == "C",
+                "section A keeps its chords");
+        expect (sectioned.getSection (1).slots[0].name == "F", "section B keeps its chords");
+
+        sectioned.setChainSections (true);
+        expect (sectioned.getPlaybackProgression().slots.size() == 2, "chaining joins A and B");
+        sectioned.setProgressionPlaying (true);
+        std::vector<Note> first, second;
+        for (int block = 0; block < 375; ++block)
+            for (const auto& note : runBlock (sectioned))
+                first.push_back (note);
+        expect (hasNotes (first, true, { 60, 64, 67 }) && sectioned.getPlayingSection() == 0, "chain starts with A");
+        for (int block = 0; block < 10; ++block)
+            for (const auto& note : runBlock (sectioned))
+                second.push_back (note);
+        expect (hasNotes (second, true, { 53, 57 }) && sectioned.getPlayingSection() == 1, "then plays B");
+        expect (sectioned.getCurrentProgressionSlot() == -1, "B's chord is not highlighted while A is on screen");
+        sectioned.setProgressionPlaying (false);
+        runBlock (sectioned);
+
+        sectioned.copySection (0, 2);
+        expect (sectioned.getSection (2).slots.size() == 1 && sectioned.getSection (2).slots[0].name == "C", "copy A to C");
+        sectioned.clearSection (2);
+        expect (sectioned.getSection (2).slots.empty(), "clear C");
+
+        juce::MemoryBlock saved;
+        sectioned.getStateInformation (saved);
+        MadScalerProcessor reloaded;
+        reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        expect (reloaded.getSection (1).slots.size() == 1 && reloaded.getSection (1).slots[0].notes == std::vector<int> { 53, 57, 60 }
+                    && reloaded.isChainingSections() && reloaded.getCurrentSection() == 0,
+                "sections survive a reload");
+    }
+
     // MelodyMaker: the melody plays along with the progression on its own channel.
     {
         madscaler::Progression progression;

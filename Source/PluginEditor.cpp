@@ -1043,7 +1043,7 @@ namespace madscaler::ui
         addAndMakeVisible (titleLabel);
 
         hintLabel.setColour (juce::Label::textColourId, Colours::textDim);
-        hintLabel.setFont (juce::FontOptions (11.5f));
+        hintLabel.setFont (juce::FontOptions (11.0f));
         addAndMakeVisible (hintLabel);
 
         for (auto* button : { &addButton, &playButton, &clearButton, &exportButton, &melodyButton })
@@ -1053,6 +1053,33 @@ namespace madscaler::ui
             button->setColour (juce::TextButton::textColourOffId, Colours::text);
             addAndMakeVisible (*button);
         }
+
+        for (int i = 0; i < MadScalerProcessor::numSections; ++i)
+        {
+            auto& button = sectionButtons[(size_t) i];
+            button.setButtonText (juce::String::charToString ((juce::juce_wchar) ('A' + i)));
+            button.setTooltip ("Section " + button.getButtonText()
+                               + ": its own progression, e.g. verse or chorus. Right-click to copy or clear");
+            button.setColour (juce::TextButton::buttonColourId, Colours::pad);
+            button.setColour (juce::TextButton::buttonOnColourId, Colours::accent);
+            button.setColour (juce::TextButton::textColourOnId, Colours::background);
+            button.onClick = [this, i]
+            {
+                select (-1);
+                processor.selectSection (i);
+                refresh();
+            };
+            button.onMenu = [this, i] { showSectionMenu (i); };
+            addAndMakeVisible (button);
+        }
+
+        chainButton.setClickingTogglesState (true);
+        chainButton.setTooltip ("Play, export and send to Melody every section in a row (A B C D), skipping empty ones");
+        chainButton.setColour (juce::TextButton::buttonColourId, Colours::pad);
+        chainButton.setColour (juce::TextButton::buttonOnColourId, Colours::padLit);
+        chainButton.setColour (juce::TextButton::textColourOffId, Colours::text);
+        chainButton.onClick = [this] { processor.setChainSections (chainButton.getToggleState()); };
+        addAndMakeVisible (chainButton);
 
         addButton.setClickingTogglesState (true);
         addButton.setTooltip ("While on, every chord you press is added to the end of the progression");
@@ -1073,7 +1100,7 @@ namespace madscaler::ui
         };
         dragHandle.writeFile = [this] (const juce::File& file)
         {
-            return processor.getProgression().slots.empty() ? juce::File() : writeMidiFile (file);
+            return processor.getPlaybackProgression().slots.empty() ? juce::File() : writeMidiFile (file);
         };
         addAndMakeVisible (dragHandle);
 
@@ -1181,6 +1208,65 @@ namespace madscaler::ui
 
         if (playButton.getToggleState() != processor.isProgressionPlaying())
             playButton.setToggleState (processor.isProgressionPlaying(), juce::dontSendNotification);
+
+        updateSections();
+    }
+
+    void ProgressionStrip::updateSections()
+    {
+        const auto current = processor.getCurrentSection();
+        const auto playing = processor.isChainingSections() ? processor.getPlayingSection() : -1;
+        for (int i = 0; i < MadScalerProcessor::numSections; ++i)
+        {
+            auto& button = sectionButtons[(size_t) i];
+            if (button.getToggleState() != (i == current))
+                button.setToggleState (i == current, juce::dontSendNotification);
+
+            // Empty sections are dimmed; the one playing in a chain is lit.
+            const auto empty = processor.getSection (i).slots.empty();
+            button.setColour (juce::TextButton::textColourOffId, empty ? Colours::textDim : Colours::text);
+            button.setColour (juce::TextButton::buttonColourId, i == playing ? Colours::padLit : Colours::pad);
+        }
+
+        if (chainButton.getToggleState() != processor.isChainingSections())
+            chainButton.setToggleState (processor.isChainingSections(), juce::dontSendNotification);
+    }
+
+    void ProgressionStrip::showSectionMenu (int section)
+    {
+        const auto name = juce::String::charToString ((juce::juce_wchar) ('A' + section));
+        juce::PopupMenu copyFrom;
+        for (int i = 0; i < MadScalerProcessor::numSections; ++i)
+            if (i != section)
+                copyFrom.addItem (juce::String::charToString ((juce::juce_wchar) ('A' + i)),
+                                  ! processor.getSection (i).slots.empty(),
+                                  false,
+                                  [this, i, section]
+                                  {
+                                      select (-1);
+                                      processor.copySection (i, section);
+                                      refresh();
+                                  });
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Section " + name);
+        menu.addItem ("Switch to " + name, section != processor.getCurrentSection(), false,
+                      [this, section]
+                      {
+                          select (-1);
+                          processor.selectSection (section);
+                          refresh();
+                      });
+        menu.addSubMenu ("Copy chords from", copyFrom);
+        menu.addSeparator();
+        menu.addItem ("Clear " + name, ! processor.getSection (section).slots.empty(), false,
+                      [this, section]
+                      {
+                          select (-1);
+                          processor.clearSection (section);
+                          refresh();
+                      });
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&sectionButtons[(size_t) section]));
     }
 
     void ProgressionStrip::paint (juce::Graphics& g)
@@ -1194,10 +1280,18 @@ namespace madscaler::ui
         auto area = getLocalBounds().reduced (10, 6);
 
         auto top = area.removeFromTop (24);
-        titleLabel.setBounds (top.removeFromLeft (90));
+        titleLabel.setBounds (top.removeFromLeft (84));
+        for (auto& button : sectionButtons)
+        {
+            button.setBounds (top.removeFromLeft (26));
+            top.removeFromLeft (3);
+        }
+        top.removeFromLeft (3);
+        chainButton.setBounds (top.removeFromLeft (54));
+        top.removeFromLeft (10);
         dragHandle.setBounds (top.removeFromRight (90));
         top.removeFromRight (6);
-        exportButton.setBounds (top.removeFromRight (100));
+        exportButton.setBounds (top.removeFromRight (90));
         top.removeFromRight (6);
         melodyButton.setBounds (top.removeFromRight (90));
         top.removeFromRight (6);
@@ -1229,7 +1323,7 @@ namespace madscaler::ui
         const auto channel = (int) processor.parameters.getRawParameterValue ("channel")->load();
         const auto bpm = processor.getLastBpm();
 
-        const auto notes = madscaler::renderProgression (processor.getProgression(), velocity,
+        const auto notes = madscaler::renderProgression (processor.getPlaybackProgression(), velocity,
                                                          pattern ? &*pattern : nullptr, bpm);
 
         constexpr int ticksPerBeat = 960;
@@ -1258,7 +1352,7 @@ namespace madscaler::ui
 
     void ProgressionStrip::exportMidi()
     {
-        if (processor.getProgression().slots.empty())
+        if (processor.getPlaybackProgression().slots.empty())
             return;
 
         chooser = std::make_unique<juce::FileChooser> ("Export progression as MIDI",
@@ -1877,7 +1971,7 @@ namespace madscaler::ui
     void sendChordsToMelody (MadScalerProcessor& processor)
     {
         auto state = processor.getMelodyState();
-        state.chords = processor.getProgression().slots;
+        state.chords = processor.getPlaybackProgression().slots;
 
         // Start with the scale that fits best.
         const auto suggestions = madscaler::suggestMelodyScales (state.chords, 1);
