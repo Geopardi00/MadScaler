@@ -21,6 +21,7 @@ namespace ParamIDs
     static const juce::String strum { "strum" };
     static const juce::String keysLock { "keysLock" };
     static const juce::String melodyChannel { "melodyChannel" };
+    static const juce::String bassChannel { "bassChannel" };
 }
 
 MadScalerProcessor::MadScalerProcessor()
@@ -45,6 +46,7 @@ MadScalerProcessor::MadScalerProcessor()
     strumParam = parameters.getRawParameterValue (ParamIDs::strum);
     keysLockParam = parameters.getRawParameterValue (ParamIDs::keysLock);
     melodyChannelParam = parameters.getRawParameterValue (ParamIDs::melodyChannel);
+    bassChannelParam = parameters.getRawParameterValue (ParamIDs::bassChannel);
 
     for (auto& channelMap : keysLockMap)
         channelMap.fill (-1);
@@ -89,6 +91,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MadScalerProcessor::createPa
                                                      AudioParameterIntAttributes().withLabel ("ms")));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::keysLock, 1 }, "Keys Lock", false));
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::melodyChannel, 1 }, "Melody MIDI Channel", 1, 16, 2));
+    layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::bassChannel, 1 }, "Bass MIDI Channel", 1, 16, 3));
     return layout;
 }
 
@@ -142,16 +145,79 @@ madscaler::Chord MadScalerProcessor::getChordForDegree (int degree, const std::v
                                                     : madscaler::ChordSize::triad;
     // MIDI note 60 is C4, so the tonic of octave n is 12 * (n + 1) + key.
     auto chord = madscaler::buildDiatonicChord (key, getScaleIndex(), degree, size, 12 * (octave + 1) + key);
+
+    const auto colour = juce::isPositiveAndBelow (degree, numDegrees) ? padColours[(size_t) degree].load() : 0u;
+    if ((colour & 0x80000000u) != 0)
+    {
+        const auto rootOffset = (int) ((colour >> 24) & 0x0fu);
+        const auto root = 12 * (octave + 1) + key + rootOffset;
+        chord.notes.clear();
+        for (int interval = 0; interval < 24; ++interval)
+            if ((colour >> interval) & 1u)
+                chord.notes.push_back (juce::jlimit (0, 127, root + interval));
+        chord.rootPitchClass = (key + rootOffset) % 12;
+
+        const juce::SpinLock::ScopedTryLockType lock (padColourLock);
+        if (lock.isLocked())
+            chord.name = madscaler::spellNote (chord.rootPitchClass, key, getScaleIndex()) + padColourSuffixes[(size_t) degree];
+    }
+
     chord.notes = madscaler::voiceChord (chord.notes, getVoicingSettings(), previousNotes);
     return chord;
 }
 
-std::vector<madscaler::ColourGroup> MadScalerProcessor::getColoursForDegree (int degree, const std::vector<int>& previousNotes) const
+void MadScalerProcessor::setPadColour (int degree, const madscaler::ColourChord& chord)
+{
+    if (! juce::isPositiveAndBelow (degree, numDegrees) || chord.notes.empty())
+        return;
+
+    const auto rootPc = ((chord.rootPitchClass % 12) + 12) % 12;
+    const auto lowest = chord.notes.front();
+    const auto rootNote = lowest - (((lowest - rootPc) % 12) + 12) % 12;
+    uint32_t bits = 0x80000000u | ((uint32_t) (((rootPc - getKey()) % 12 + 12) % 12) << 24);
+    for (auto note : chord.notes)
+        if (juce::isPositiveAndBelow (note - rootNote, 24))
+            bits |= 1u << (note - rootNote);
+
+    // The name without its root, so the root can be spelled for any key.
+    auto suffix = chord.name;
+    if (! suffix.empty() && suffix[0] >= 'A' && suffix[0] <= 'G')
+    {
+        suffix.erase (0, 1);
+        if (! suffix.empty() && (suffix[0] == 'b' || suffix[0] == '#'))
+            suffix.erase (0, 1);
+    }
+
+    {
+        const juce::SpinLock::ScopedLockType lock (padColourLock);
+        padColourSuffixes[(size_t) degree] = suffix;
+    }
+    padColours[(size_t) degree].store (bits);
+    ++padColourVersion;
+}
+
+void MadScalerProcessor::clearPadColour (int degree)
+{
+    if (! juce::isPositiveAndBelow (degree, numDegrees))
+        return;
+    padColours[(size_t) degree].store (0u);
+    ++padColourVersion;
+}
+
+bool MadScalerProcessor::hasPadColour (int degree) const
+{
+    return juce::isPositiveAndBelow (degree, numDegrees) && (padColours[(size_t) degree].load() & 0x80000000u) != 0;
+}
+
+std::vector<madscaler::ColourGroup> MadScalerProcessor::getColoursForDegree (int degree, const std::vector<int>& previousNotes,
+                                                                             bool voiced) const
 {
     const auto key = getKey();
     const auto octave = (int) octaveParam->load();
     const auto sevenths = chordSizeParam->load() > 0.5f;
     auto groups = madscaler::getChordColours (key, getScaleIndex(), degree, sevenths, 12 * (octave + 1) + key);
+    if (! voiced)
+        return groups;
 
     const auto voicing = getVoicingSettings();
     for (auto& group : groups)
@@ -252,10 +318,10 @@ void MadScalerProcessor::setColourChordPressed (int id, const std::vector<int>& 
     pushUiEvent (event);
 }
 
-void MadScalerProcessor::setMelodyNotePressed (int midiNote, bool pressed)
+void MadScalerProcessor::setMelodyNotePressed (int midiNote, bool pressed, bool bass)
 {
     UiEvent event;
-    event.kind = UiEvent::Kind::melodyNote;
+    event.kind = bass ? UiEvent::Kind::bassNote : UiEvent::Kind::melodyNote;
     event.index = juce::jlimit (0, 127, midiNote);
     event.pressed = pressed;
     pushUiEvent (event);
@@ -515,20 +581,93 @@ void MadScalerProcessor::setProgression (const madscaler::Progression& newProgre
     if ((int) progression.slots.size() > madscaler::Progression::maxSlots)
         progression.slots.resize ((size_t) madscaler::Progression::maxSlots);
 
+    sections[(size_t) currentSection] = progression;
+    updateProgressionSnapshot();
+}
+
+void MadScalerProcessor::updateProgressionSnapshot()
+{
     ProgressionSnapshot snapshot;
-    for (const auto& slot : progression.slots)
+    for (int section = 0; section < numSections; ++section)
     {
-        auto& target = snapshot.slots[(size_t) snapshot.numSlots++];
-        target.numNotes = juce::jmin ((int) slot.notes.size(), maxChordNotes);
-        for (int i = 0; i < target.numNotes; ++i)
-            target.notes[(size_t) i] = juce::jlimit (0, 127, slot.notes[(size_t) i]);
-        target.lengthBeats = juce::jmax (0.25, slot.lengthBeats);
-        snapshot.totalBeats += target.lengthBeats;
+        if (! chainSections && section != currentSection)
+            continue;
+
+        int index = 0;
+        for (const auto& slot : sections[(size_t) section].slots)
+        {
+            auto& target = snapshot.slots[(size_t) snapshot.numSlots++];
+            target.numNotes = juce::jmin ((int) slot.notes.size(), maxChordNotes);
+            for (int i = 0; i < target.numNotes; ++i)
+                target.notes[(size_t) i] = juce::jlimit (0, 127, slot.notes[(size_t) i]);
+            target.lengthBeats = juce::jmax (0.25, slot.lengthBeats);
+            target.section = section;
+            target.index = index++;
+            snapshot.totalBeats += target.lengthBeats;
+        }
     }
 
     const juce::SpinLock::ScopedLockType lock (progressionLock);
     pendingSnapshot = snapshot;
     snapshotChanged.store (true);
+}
+
+int MadScalerProcessor::getCurrentProgressionSlot() const
+{
+    return playingSection.load() == currentSection ? currentProgressionSlot.load() : -1;
+}
+
+void MadScalerProcessor::selectSection (int section)
+{
+    section = juce::jlimit (0, numSections - 1, section);
+    if (section == currentSection)
+        return;
+
+    currentSection = section;
+    setProgression (sections[(size_t) section]);
+}
+
+const madscaler::Progression& MadScalerProcessor::getSection (int section) const
+{
+    return sections[(size_t) juce::jlimit (0, numSections - 1, section)];
+}
+
+void MadScalerProcessor::copySection (int from, int to)
+{
+    from = juce::jlimit (0, numSections - 1, from);
+    to = juce::jlimit (0, numSections - 1, to);
+    sections[(size_t) to] = sections[(size_t) from];
+    if (to == currentSection)
+        setProgression (sections[(size_t) to]);
+    else
+        updateProgressionSnapshot();
+}
+
+void MadScalerProcessor::clearSection (int section)
+{
+    section = juce::jlimit (0, numSections - 1, section);
+    sections[(size_t) section] = {};
+    if (section == currentSection)
+        setProgression ({});
+    else
+        updateProgressionSnapshot();
+}
+
+void MadScalerProcessor::setChainSections (bool shouldChain)
+{
+    chainSections = shouldChain;
+    updateProgressionSnapshot();
+}
+
+madscaler::Progression MadScalerProcessor::getPlaybackProgression() const
+{
+    if (! chainSections)
+        return progression;
+
+    madscaler::Progression chained;
+    for (const auto& section : sections)
+        chained.slots.insert (chained.slots.end(), section.slots.begin(), section.slots.end());
+    return chained;
 }
 
 void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
@@ -575,6 +714,7 @@ void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
             setSlot (-1, 0);
         wasProgressionPlaying = false;
         currentProgressionSlot.store (-1);
+        playingSection.store (-1);
         return;
     }
 
@@ -611,7 +751,7 @@ void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
         }
     }
 
-    if (melodyPlaying.load())
+    if (melodyPlaying.load() || bassPlaying.load())
         playMelody (startBeat, endBeat, beatsPerSample, numSamples, out);
     else
         stopMelodyNotes (out, 0);
@@ -619,7 +759,17 @@ void MadScalerProcessor::playProgression (int numSamples, juce::MidiBuffer& out)
     if (! hostPlaying)
         freeProgressionBeats = endBeat;
 
-    currentProgressionSlot.store (playingSlot);
+    if (playingSlot >= 0)
+    {
+        const auto& data = audioSnapshot.slots[(size_t) playingSlot];
+        playingSection.store (data.section);
+        currentProgressionSlot.store (data.index);
+    }
+    else
+    {
+        playingSection.store (-1);
+        currentProgressionSlot.store (-1);
+    }
 }
 
 void MadScalerProcessor::setMelodyState (const MelodyState& newState)
@@ -629,13 +779,18 @@ void MadScalerProcessor::setMelodyState (const MelodyState& newState)
 
     MelodySnapshot snapshot;
     snapshot.totalBeats = newState.totalBeats;
-    for (const auto& note : newState.notes)
+    auto addNotes = [&snapshot] (const std::vector<madscaler::TimedNote>& notes, bool bass)
     {
-        if (snapshot.numNotes == MelodySnapshot::maxNotes)
-            break;
-        snapshot.notes[(size_t) snapshot.numNotes++] = { note.startBeat, note.lengthBeats,
-                                                         juce::jlimit (0, 127, note.note), juce::jlimit (1, 127, note.velocity) };
-    }
+        for (const auto& note : notes)
+        {
+            if (snapshot.numNotes == MelodySnapshot::maxNotes)
+                break;
+            snapshot.notes[(size_t) snapshot.numNotes++] = { note.startBeat, note.lengthBeats, juce::jlimit (0, 127, note.note),
+                                                             juce::jlimit (1, 127, note.velocity), bass };
+        }
+    };
+    addNotes (newState.notes, false);
+    addNotes (newState.bassNotes, true);
 
     const juce::SpinLock::ScopedLockType lock (progressionLock);
     pendingMelody = snapshot;
@@ -673,13 +828,16 @@ void MadScalerProcessor::playMelody (double startBeat, double endBeat, double be
         return juce::jlimit (0, numSamples - 1, (int) std::ceil ((beat - startBeat) / beatsPerSample - 1.0e-6));
     };
 
-    // Note-offs due in this block.
+    const auto playMelodyPart = melodyPlaying.load(), playBassPart = bassPlaying.load();
+
+    // Note-offs due in this block, and for a part that was switched off.
     for (int i = 0; i < numActiveMelodyNotes;)
     {
         auto& active = activeMelodyNotes[(size_t) i];
-        if (active.endBeat < endBeat)
+        const auto partOff = active.bass ? ! playBassPart : ! playMelodyPart;
+        if (active.endBeat < endBeat || partOff)
         {
-            out.addEvent (juce::MidiMessage::noteOff (active.channel, active.note), samplePosFor (active.endBeat));
+            out.addEvent (juce::MidiMessage::noteOff (active.channel, active.note), partOff ? 0 : samplePosFor (active.endBeat));
             active = activeMelodyNotes[(size_t) --numActiveMelodyNotes];
         }
         else
@@ -692,7 +850,8 @@ void MadScalerProcessor::playMelody (double startBeat, double endBeat, double be
     if (audioMelody.numNotes == 0 || total <= 0.0)
         return;
 
-    const auto channel = juce::jlimit (1, 16, (int) melodyChannelParam->load());
+    const auto melodyChannel = juce::jlimit (1, 16, (int) melodyChannelParam->load());
+    const auto bassChannel = juce::jlimit (1, 16, (int) bassChannelParam->load());
 
     // Note-ons starting in this block, looping over the melody's length.
     for (auto loop = std::floor (startBeat / total); loop * total < endBeat; loop += 1.0)
@@ -700,16 +859,20 @@ void MadScalerProcessor::playMelody (double startBeat, double endBeat, double be
         for (int i = 0; i < audioMelody.numNotes; ++i)
         {
             const auto& note = audioMelody.notes[(size_t) i];
+            if (note.bass ? ! playBassPart : ! playMelodyPart)
+                continue;
+
             const auto start = loop * total + note.start;
             if (start < startBeat - 1.0e-9 || start >= endBeat - 1.0e-9)
                 continue;
 
             const auto onPos = samplePosFor (start);
+            const auto channel = note.bass ? bassChannel : melodyChannel;
 
-            // The same pitch still sounding is released first.
+            // The same pitch still sounding on this channel is released first.
             for (int a = 0; a < numActiveMelodyNotes; ++a)
             {
-                if (activeMelodyNotes[(size_t) a].note == note.note)
+                if (activeMelodyNotes[(size_t) a].note == note.note && activeMelodyNotes[(size_t) a].channel == channel)
                 {
                     out.addEvent (juce::MidiMessage::noteOff (activeMelodyNotes[(size_t) a].channel, note.note), onPos);
                     activeMelodyNotes[(size_t) a] = activeMelodyNotes[(size_t) --numActiveMelodyNotes];
@@ -724,7 +887,7 @@ void MadScalerProcessor::playMelody (double startBeat, double endBeat, double be
                 out.addEvent (juce::MidiMessage::noteOff (channel, note.note),
                               juce::jmin (numSamples - 1, juce::jmax (onPos + 1, samplePosFor (end))));
             else if (numActiveMelodyNotes < (int) activeMelodyNotes.size())
-                activeMelodyNotes[(size_t) numActiveMelodyNotes++] = { note.note, channel, end };
+                activeMelodyNotes[(size_t) numActiveMelodyNotes++] = { note.note, channel, end, note.bass };
         }
     }
 }
@@ -866,8 +1029,10 @@ void MadScalerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                     }
 
                     case UiEvent::Kind::melodyNote:
+                    case UiEvent::Kind::bassNote:
                     {
-                        const auto melodyChannel = juce::jlimit (1, 16, (int) melodyChannelParam->load());
+                        const auto melodyChannel = juce::jlimit (1, 16, (int) (event.kind == UiEvent::Kind::bassNote ? bassChannelParam
+                                                                                                                     : melodyChannelParam)->load());
                         out.addEvent (event.pressed ? juce::MidiMessage::noteOn (melodyChannel, event.index, velocity)
                                                     : juce::MidiMessage::noteOff (melodyChannel, event.index),
                                       0);
@@ -945,21 +1110,52 @@ void MadScalerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = parameters.copyState();
 
-    juce::ValueTree progressionTree ("Progression");
-    for (const auto& slot : progression.slots)
+    juce::ValueTree padsTree ("Pads");
     {
-        juce::StringArray notes;
-        for (auto note : slot.notes)
-            notes.add (juce::String (note));
-
-        juce::ValueTree slotTree ("Slot");
-        slotTree.setProperty ("name", juce::String::fromUTF8 (slot.name.c_str()), nullptr);
-        slotTree.setProperty ("notes", notes.joinIntoString (" "), nullptr);
-        slotTree.setProperty ("beats", slot.lengthBeats, nullptr);
-        progressionTree.appendChild (slotTree, nullptr);
+        const juce::SpinLock::ScopedLockType lock (padColourLock);
+        for (int degree = 0; degree < numDegrees; ++degree)
+        {
+            juce::ValueTree padTree ("Pad");
+            padTree.setProperty ("colour", juce::String::toHexString ((int) padColours[(size_t) degree].load()), nullptr);
+            padTree.setProperty ("suffix", juce::String::fromUTF8 (padColourSuffixes[(size_t) degree].c_str()), nullptr);
+            padsTree.appendChild (padTree, nullptr);
+        }
     }
+    state.removeChild (state.getChildWithName ("Pads"), nullptr);
+    state.appendChild (padsTree, nullptr);
+
+    auto writeSlots = [] (juce::ValueTree& tree, const madscaler::Progression& source)
+    {
+        for (const auto& slot : source.slots)
+        {
+            juce::StringArray notes;
+            for (auto note : slot.notes)
+                notes.add (juce::String (note));
+
+            juce::ValueTree slotTree ("Slot");
+            slotTree.setProperty ("name", juce::String::fromUTF8 (slot.name.c_str()), nullptr);
+            slotTree.setProperty ("notes", notes.joinIntoString (" "), nullptr);
+            slotTree.setProperty ("beats", slot.lengthBeats, nullptr);
+            tree.appendChild (slotTree, nullptr);
+        }
+    };
+
+    juce::ValueTree progressionTree ("Progression");
+    writeSlots (progressionTree, progression);
     state.removeChild (state.getChildWithName ("Progression"), nullptr);
     state.appendChild (progressionTree, nullptr);
+
+    juce::ValueTree sectionsTree ("Sections");
+    sectionsTree.setProperty ("current", currentSection, nullptr);
+    sectionsTree.setProperty ("chain", chainSections, nullptr);
+    for (const auto& section : sections)
+    {
+        juce::ValueTree sectionTree ("Section");
+        writeSlots (sectionTree, section);
+        sectionsTree.appendChild (sectionTree, nullptr);
+    }
+    state.removeChild (state.getChildWithName ("Sections"), nullptr);
+    state.appendChild (sectionsTree, nullptr);
 
     juce::ValueTree melodyTree ("Melody");
     const auto& settings = melodyState.settings;
@@ -989,6 +1185,23 @@ void MadScalerProcessor::getStateInformation (juce::MemoryBlock& destData)
                          + juce::String (note.note) + ":" + juce::String (note.velocity));
     melodyTree.setProperty ("notes", melodyNotes.joinIntoString (" "), nullptr);
 
+    const auto& bass = melodyState.bass;
+    melodyTree.setProperty ("bassStyle", (int) bass.style, nullptr);
+    melodyTree.setProperty ("bassLow", bass.lowNote, nullptr);
+    melodyTree.setProperty ("bassGate", bass.gate, nullptr);
+    melodyTree.setProperty ("bassSwing", bass.swing, nullptr);
+    melodyTree.setProperty ("bassHumanise", bass.humanise, nullptr);
+    melodyTree.setProperty ("bassLeadIn", bass.leadIn, nullptr);
+    melodyTree.setProperty ("bassSeed", (int) bass.seed, nullptr);
+    melodyTree.setProperty ("bassPlaying", bassPlaying.load(), nullptr);
+    melodyTree.setProperty ("humanise", settings.humanise, nullptr);
+
+    juce::StringArray bassNotes;
+    for (const auto& note : melodyState.bassNotes)
+        bassNotes.add (juce::String (note.startBeat) + ":" + juce::String (note.lengthBeats) + ":"
+                       + juce::String (note.note) + ":" + juce::String (note.velocity));
+    melodyTree.setProperty ("bassNotes", bassNotes.joinIntoString (" "), nullptr);
+
     for (const auto& slot : melodyState.chords)
     {
         juce::StringArray notes;
@@ -1015,17 +1228,39 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     auto state = juce::ValueTree::fromXml (*xml);
 
-    madscaler::Progression restored;
-    const auto progressionTree = state.getChildWithName ("Progression");
-    for (const auto& slotTree : progressionTree)
+    auto readSlots = [] (const juce::ValueTree& tree)
     {
-        madscaler::ProgressionSlot slot;
-        slot.name = slotTree.getProperty ("name").toString().toStdString();
-        for (const auto& token : juce::StringArray::fromTokens (slotTree.getProperty ("notes").toString(), " ", ""))
-            if (token.isNotEmpty())
-                slot.notes.push_back (token.getIntValue());
-        slot.lengthBeats = (double) slotTree.getProperty ("beats", 4.0);
-        restored.slots.push_back (slot);
+        madscaler::Progression result;
+        for (const auto& slotTree : tree)
+        {
+            madscaler::ProgressionSlot slot;
+            slot.name = slotTree.getProperty ("name").toString().toStdString();
+            for (const auto& token : juce::StringArray::fromTokens (slotTree.getProperty ("notes").toString(), " ", ""))
+                if (token.isNotEmpty())
+                    slot.notes.push_back (token.getIntValue());
+            slot.lengthBeats = (double) slotTree.getProperty ("beats", 4.0);
+            result.slots.push_back (slot);
+            if ((int) result.slots.size() >= madscaler::Progression::maxSlots)
+                break;
+        }
+        return result;
+    };
+
+    const auto progressionTree = state.getChildWithName ("Progression");
+    const auto sectionsTree = state.getChildWithName ("Sections");
+    std::array<madscaler::Progression, numSections> restoredSections;
+    int restoredCurrent = 0;
+    bool restoredChain = false;
+    if (sectionsTree.isValid())
+    {
+        restoredCurrent = juce::jlimit (0, numSections - 1, (int) sectionsTree.getProperty ("current", 0));
+        restoredChain = (bool) sectionsTree.getProperty ("chain", false);
+        for (int i = 0; i < numSections && i < sectionsTree.getNumChildren(); ++i)
+            restoredSections[(size_t) i] = readSlots (sectionsTree.getChild (i));
+    }
+    else
+    {
+        restoredSections[0] = readSlots (progressionTree); // saved before sections existed
     }
 
     MelodyState melody;
@@ -1055,13 +1290,32 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
         melody.totalBeats = (double) melodyTree.getProperty ("total", 0.0);
         melodyPlaying.store ((bool) melodyTree.getProperty ("playing", true));
 
-        for (const auto& token : juce::StringArray::fromTokens (melodyTree.getProperty ("notes").toString(), " ", ""))
+        auto readNotes = [&melodyTree] (const juce::Identifier& property, std::vector<madscaler::TimedNote>& notes)
         {
-            const auto parts = juce::StringArray::fromTokens (token, ":", "");
-            if (parts.size() == 4)
-                melody.notes.push_back ({ parts[0].getDoubleValue(), parts[1].getDoubleValue(),
-                                          parts[2].getIntValue(), parts[3].getIntValue() });
-        }
+            for (const auto& token : juce::StringArray::fromTokens (melodyTree.getProperty (property).toString(), " ", ""))
+            {
+                const auto parts = juce::StringArray::fromTokens (token, ":", "");
+                if (parts.size() == 4)
+                    notes.push_back ({ parts[0].getDoubleValue(), parts[1].getDoubleValue(),
+                                       parts[2].getIntValue(), parts[3].getIntValue() });
+            }
+        };
+        readNotes ("notes", melody.notes);
+        readNotes ("bassNotes", melody.bassNotes);
+
+        settings.humanise = juce::jlimit (0, 3, (int) melodyTree.getProperty ("humanise", 0));
+        auto& bass = melody.bass;
+        bass.style = (madscaler::BassStyle) juce::jlimit (0, (int) madscaler::getBassStyleNames().size() - 1,
+                                                          (int) melodyTree.getProperty ("bassStyle", (int) bass.style));
+        bass.lowNote = juce::jlimit (12, 72, (int) melodyTree.getProperty ("bassLow", 36));
+        bass.gate = juce::jlimit (0, 2, (int) melodyTree.getProperty ("bassGate", 1));
+        bass.swing = juce::jlimit (0, 3, (int) melodyTree.getProperty ("bassSwing", 0));
+        bass.humanise = juce::jlimit (0, 3, (int) melodyTree.getProperty ("bassHumanise", 0));
+        bass.leadIn = (bool) melodyTree.getProperty ("bassLeadIn", false);
+        bass.seed = (uint32_t) (int) melodyTree.getProperty ("bassSeed", 1);
+        bass.keyPitchClass = settings.keyPitchClass;
+        bass.scaleIndex = settings.scaleIndex;
+        bassPlaying.store ((bool) melodyTree.getProperty ("bassPlaying", false));
 
         for (const auto& chordTree : melodyTree)
         {
@@ -1075,10 +1329,28 @@ void MadScalerProcessor::setStateInformation (const void* data, int sizeInBytes)
         }
     }
 
+    const auto padsTree = state.getChildWithName ("Pads");
+    for (int degree = 0; degree < numDegrees; ++degree)
+    {
+        const auto padTree = padsTree.getChild (degree);
+        const auto bits = padTree.isValid() ? (uint32_t) padTree.getProperty ("colour", "0").toString().getHexValue32() : 0u;
+        {
+            const juce::SpinLock::ScopedLockType lock (padColourLock);
+            padColourSuffixes[(size_t) degree] = padTree.isValid() ? padTree.getProperty ("suffix").toString().toStdString() : std::string();
+        }
+        padColours[(size_t) degree].store (bits);
+    }
+    ++padColourVersion;
+
+    state.removeChild (padsTree, nullptr);
     state.removeChild (progressionTree, nullptr);
+    state.removeChild (sectionsTree, nullptr);
     state.removeChild (melodyTree, nullptr);
     parameters.replaceState (state);
-    setProgression (restored);
+    sections = restoredSections;
+    currentSection = restoredCurrent;
+    chainSections = restoredChain;
+    setProgression (sections[(size_t) currentSection]);
     setMelodyState (melody);
 }
 
