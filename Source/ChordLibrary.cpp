@@ -145,6 +145,45 @@ namespace madscaler
             { "Morning light",         6, "Ambient|Hopeful|Meditation",                "Imaj7:8 II:8 iii7:8 II:8" },
             { "Intro swell",           0, "Intro & outro|Hopeful",                     "IV:4 V:4 I:8" },
             { "Fade out",              0, "Intro & outro|Nostalgic|Bittersweet",       "IV:4 iv:4 I:8" },
+
+            // Progressions of well-known pieces: chords only, simplified to one
+            // chord per bar or half bar, written relative to the key.
+            // Film and TV
+            { "Time (Inception)",                 4, "Film & TV|Film score|Epic|Sad|Ambient",          "i v bVII IV" },
+            { "Imperial March (Star Wars)",       1, "Film & TV|Film score|Dark|Battle",               "i:2 bvi:2 i:2 bvi:2 i:8" },
+            { "Spy theme (James Bond)",           1, "Film & TV|Film score|Mysterious|Tense",          "i:2 bVI:2 i6:2 bVI:2 i:2 bVI:2 i6:2 imaj7:2" },
+            { "My Heart Will Go On (Titanic)",    0, "Film & TV|Love scene|Romantic|Ballad",           "I V IV V vi V IV V" },
+            { "Comptine (Am\xC3\xA9lie)",         1, "Film & TV|Nostalgic|Bittersweet|Study",          "i bIII v bVII" },
+            { "Nuvole Bianche (Einaudi)",         1, "Instrumental hits|Classical|Sad|Ambient",        "i:8 bVI:8 bIII:8 bVII:8" },
+
+            // Classical pieces
+            { "Moonlight Sonata (Beethoven)",     1, "Classical pieces|Classical|Sad|Mysterious",      "i:8 bVI:2 bII:2 V7:4 i:4" },
+            { "Prelude in C (Bach)",              0, "Classical pieces|Classical|Hopeful|Study",        "I ii7 V7 I vi II7 V Imaj7 vi7 II7 V V" },
+            { "Gymnop\xC3\xA9" "die No. 1 (Satie)",  0, "Classical pieces|Classical|Dreamy|Meditation", "IVmaj7:3 Imaj7:3" },
+            { "La Folia",                         1, "Classical pieces|Classical|Epic|Dark",           "i V i bVII bIII bVII i V" },
+            { "Passacaglia (Handel)",             1, "Classical pieces|Classical|Epic|Film score",     "i iv bVII bIII bVI ii\xC3\xB8" "7 V i" },
+            { "F\xC3\xBCr Elise (Beethoven)",       1, "Classical pieces|Classical|Romantic|Nostalgic",   "i V i bIII:2 bVII:2 i V" },
+            { "Greensleeves",                     1, "Classical pieces|Folk & Country|Fantasy|Sad",    "i bIII bVII v i bVI V V" },
+
+            // Jazz standards
+            { "Autumn Leaves",                    0, "Jazz standards|Jazz|Nostalgic|Bittersweet",      "ii7 V7 Imaj7 IVmaj7 vii\xC3\xB8" "7 III7 vi7 vi7 vii\xC3\xB8" "7 III7 vi7 vi7 ii7 V7 Imaj7 Imaj7" },
+            { "Take Five (Brubeck)",              1, "Jazz standards|Jazz|Chill|Mysterious",           "i:3 v7:2 i:3 v7:2" },
+            { "So What (Miles Davis)",            4, "Jazz standards|Jazz|Chill|Mysterious",           "i7:16 i7:16 bii7:16 i7:16" },
+            { "Blue Bossa",                       1, "Jazz standards|Jazz|Latin|Romantic",             "i7:8 iv7:8 ii\xC3\xB8" "7 V7 i7:8 biii7 bVI7 bIImaj7:8 ii\xC3\xB8" "7 V7 i7:8" },
+            { "Cantaloupe Island (Hancock)",      4, "Jazz standards|Jazz|Funk|Chill",                 "i7:16 bVI7:16 vi7:16 i7:16" },
+            { "Maiden Voyage (Hancock)",          7, "Jazz standards|Jazz|Dreamy|Ambient",             "I7sus4:16 bIII7sus4:16 bII7sus4:16 vii7:16" },
+            { "Take the A Train (Ellington)",     0, "Jazz standards|Jazz|Happy",                      "I6:8 II7:8 ii7:4 V7:4 I6:8" },
+            { "Satin Doll (Ellington)",           0, "Jazz standards|Jazz|Romantic|Chill",             "ii7:2 V7:2 ii7:2 V7:2 iii7:2 VI7:2 iii7:2 VI7:2 vi7:2 II7:2 bvi7:2 bII7:2 Imaj7:8" },
+            { "Giant Steps (Coltrane)",           0, "Jazz standards|Jazz|Tense",                      "Imaj7:2 bIII7:2 bVImaj7:2 VII7:2 IIImaj7:4 bvii7:2 bIII7:2 bVImaj7:2 VII7:2 IIImaj7:2 V7:2 Imaj7:4 #iv7:2 VII7:2 IIImaj7:4" },
+
+            // Instrumental hits
+            { "Chameleon (Hancock)",              4, "Instrumental hits|Funk|R&B & Soul",              "i7:4 IV7:4" },
+            { "Oye Como Va (Puente)",             4, "Instrumental hits|Latin|Happy|Chill",            "i7:4 IV9:4" },
+            { "Tequila (The Champs)",             7, "Instrumental hits|Latin|Rock|Happy",             "I:4 bVII:4" },
+            { "Sleep Walk (Santo & Johnny)",      0, "Instrumental hits|Rock|Romantic|Nostalgic",      "I vi iv V" },
+            { "Green Onions (Booker T.)",         0, "Instrumental hits|Blues|R&B & Soul",             "I:2 bIII:1 IV:1 I:2 bIII:1 IV:1 IV:2 bVI:1 bVII:1 I:2 bIII:1 IV:1" },
+            { "Misirlou (surf)",                  10, "Instrumental hits|Rock|Tense|Mysterious",       "I:4 bII:4 I:4 bII:2 I:2" },
+            { "Walk Don't Run (The Ventures)",    1, "Instrumental hits|Rock|Latin|Nostalgic",         "i:2 bVII:2 bVI:2 V:2" },
         };
         return library;
     }
@@ -152,6 +191,7 @@ namespace madscaler
     const std::vector<TagGroup>& getLibraryTagGroups()
     {
         static const std::vector<TagGroup> groups {
+            { "Famous", { "Film & TV", "Classical pieces", "Jazz standards", "Instrumental hits" } },
             { "Style", { "Pop", "Rock", "Metal", "EDM", "Synthwave", "Hip-hop", "R&B & Soul", "Gospel", "Funk",
                          "Jazz", "Lo-fi", "Blues", "Folk & Country", "Latin", "Reggae", "Classical" } },
             { "Mood", { "Happy", "Hopeful", "Triumphant", "Heroic", "Epic", "Romantic", "Dreamy", "Chill",

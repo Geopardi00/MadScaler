@@ -55,6 +55,15 @@ code, presets or assets from, any commercial chord plugin.
   fantasy, sci-fi, horror, ambient, meditation and more). Pick one in the
   Library tab and Load (or Append) it: it arrives in the current key,
   voice-led, and the pads switch to its scale.
+  Under "Famous" are the chord progressions of 29 well-known pieces: film
+  and TV themes (Inception's "Time", the Imperial March, the Bond theme,
+  Titanic, Amélie), classical pieces (Moonlight Sonata, Bach's Prelude in C,
+  Gymnopédie No. 1, La Folia, Handel's Passacaglia, Für Elise,
+  Greensleeves), jazz standards (Autumn Leaves, Take Five, So What, Blue
+  Bossa, Cantaloupe Island, Maiden Voyage, Take the A Train, Satin Doll,
+  Giant Steps) and instrumental hits (Nuvole Bianche, Chameleon, Oye Como
+  Va, Tequila, Sleep Walk, Green Onions, Misirlou, Walk Don't Run). Only the
+  chords are included, simplified, in any key.
 - Edit any chord of the progression: click it to hear it and select it, then
   press a pad, colour, Circle of Fifths or detected chord to replace it
   (the length stays). Right-click a chord for "Replace with" the scale's
